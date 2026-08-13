@@ -1,4 +1,3 @@
-import { Analytics } from '@vercel/analytics/next'
 import type { Metadata, Viewport } from 'next'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster } from '@/components/ui/sonner'
@@ -34,7 +33,6 @@ export default function RootLayout({
       <body className="antialiased font-sans">
         <TooltipProvider delay={200}>{children}</TooltipProvider>
         <Toaster />
-        {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>
   )
