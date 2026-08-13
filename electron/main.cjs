@@ -1,5 +1,5 @@
 // Electron 主进程：直接加载 Next.js 静态导出的 HTML。
-const { app, BrowserWindow, ipcMain } = require("electron")
+const { app, BrowserWindow, ipcMain, shell } = require("electron")
 const path = require("path")
 
 // 限制为单实例：第二个实例启动时聚焦已有窗口并退出自身
@@ -42,6 +42,20 @@ function createWindow() {
     else win.maximize()
   })
   ipcMain.on("win:close", () => win.close())
+
+  // 拦截 window.open（如 target="_blank" 的 <a> 链接），外部链接统一用系统浏览器打开
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url)
+    return { action: "deny" }
+  })
+
+  // 拦截同窗口导航到外部链接，改用系统浏览器打开，防止主窗口被导航走
+  win.webContents.on("will-navigate", (event, url) => {
+    if (/^https?:\/\//i.test(url)) {
+      event.preventDefault()
+      shell.openExternal(url)
+    }
+  })
 
   // 页面准备就绪后再显示窗口，减少白屏时间
   win.once("ready-to-show", () => {
