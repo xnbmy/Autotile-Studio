@@ -36,7 +36,7 @@ export function renderDualTile(canvas: HTMLCanvasElement, size: number, maskInde
   const corners = indexToCorners(maskIndex)
   canvas.width = size
   canvas.height = size
-  const ctx = canvas.getContext("2d")
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })
   if (!ctx) return
   ctx.clearRect(0, 0, size, size)
   const grass = hexToRgb(grassColor)
@@ -106,7 +106,7 @@ export function renderDualTileArc(
 ) {
   canvas.width = size
   canvas.height = size
-  const ctx = canvas.getContext("2d")
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })
   if (!ctx) return
   ctx.clearRect(0, 0, size, size)
 

@@ -65,7 +65,7 @@ export function ModeBTemplateView({ onBack }: { onBack: () => void }) {
     const bh = Math.max(1, Math.round(result.height * z))
     el.width = bw
     el.height = bh
-    const ctx = el.getContext("2d")
+    const ctx = el.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     ctx.imageSmoothingEnabled = false
     ctx.clearRect(0, 0, el.width, el.height)

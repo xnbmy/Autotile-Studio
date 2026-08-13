@@ -11,8 +11,8 @@ function cloneCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
   const out = document.createElement("canvas")
   out.width = src.width
   out.height = src.height
-  const octx = out.getContext("2d")
-  const sctx = src.getContext("2d")
+  const octx = out.getContext("2d", { willReadFrequently: true })
+  const sctx = src.getContext("2d", { willReadFrequently: true })
   if (octx && sctx) {
     octx.putImageData(sctx.getImageData(0, 0, src.width, src.height), 0, 0)
   }

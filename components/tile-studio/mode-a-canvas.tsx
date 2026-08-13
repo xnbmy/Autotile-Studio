@@ -73,7 +73,7 @@ export function ModeACanvas() {
   const draw = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const ctx = canvas.getContext("2d")
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     const dpr = window.devicePixelRatio || 1
     const width = wrapRef.current?.clientWidth ?? 800
@@ -271,7 +271,10 @@ export function ModeACanvas() {
     setDragStart(null)
   }
 
-  function handleWheel(e: React.WheelEvent) {
+  // React 合成 onWheel 在 React 19 中是 passive 监听，无法 preventDefault；
+  // 改用原生 wheel 事件（passive:false），与其它画布组件一致
+  const wheelRef = useRef((e: WheelEvent) => {})
+  wheelRef.current = (e: WheelEvent) => {
     e.preventDefault()
     const rect = canvasRef.current?.getBoundingClientRect()
     if (!rect) return
@@ -284,12 +287,18 @@ export function ModeACanvas() {
     setZoom(newZoom)
     setPan({ x: mx - worldX * newZoom, y: my - worldY * newZoom })
   }
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const handler = (e: WheelEvent) => wheelRef.current(e)
+    el.addEventListener("wheel", handler, { passive: false })
+    return () => el.removeEventListener("wheel", handler)
+  }, [])
 
   return (
     <div
       ref={wrapRef}
       className="relative h-full w-full touch-none overflow-hidden bg-checkerboard"
-      onWheel={handleWheel}
     >
       <canvas
         ref={canvasRef}

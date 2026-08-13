@@ -113,7 +113,7 @@ export function ModeCOverview() {
       cv.width = Math.round(size.w * dpr)
       cv.height = Math.round(size.h * dpr)
     }
-    const ctx = cv.getContext("2d")
+    const ctx = cv.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, size.w, size.h)

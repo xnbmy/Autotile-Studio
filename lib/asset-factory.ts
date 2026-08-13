@@ -83,7 +83,7 @@ function rotateCanvas(src: HTMLCanvasElement, deg: number): HTMLCanvasElement {
     out.width = w
     out.height = h
   }
-  const ctx = out.getContext("2d")
+  const ctx = out.getContext("2d", { willReadFrequently: true })
   if (ctx) {
     ctx.imageSmoothingEnabled = false
     ctx.translate(out.width / 2, out.height / 2)
@@ -137,7 +137,7 @@ export function generateBaseCanvases(mappingType: MappingType, tileSize: number,
       const out = document.createElement("canvas")
       out.width = qSize
       out.height = qSize
-      const octx = out.getContext("2d")
+      const octx = out.getContext("2d", { willReadFrequently: true })
       if (!octx) return out
       octx.imageSmoothingEnabled = false
       octx.drawImage(

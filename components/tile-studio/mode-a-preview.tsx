@@ -65,7 +65,7 @@ export function ModeAPreview({
     const el = canvasRef.current
     if (!el) return
     const size = Math.max(16, tileSize)
-    const ctx = el.getContext("2d")
+    const ctx = el.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     ctx.imageSmoothingEnabled = false
 

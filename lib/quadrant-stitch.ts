@@ -321,7 +321,7 @@ function drawQuarterTransformed(
   const temp = document.createElement("canvas")
   temp.width = tileSize
   temp.height = tileSize
-  const tctx = temp.getContext("2d")
+  const tctx = temp.getContext("2d", { willReadFrequently: true })
   if (!tctx) return
   tctx.imageSmoothingEnabled = false
   tctx.save()
@@ -349,7 +349,7 @@ function rotateCanvasDeg(src: HTMLCanvasElement, deg: number): HTMLCanvasElement
     out.width = w
     out.height = h
   }
-  const ctx = out.getContext("2d")
+  const ctx = out.getContext("2d", { willReadFrequently: true })
   if (ctx) {
     ctx.imageSmoothingEnabled = false
     ctx.translate(out.width / 2, out.height / 2)
@@ -450,7 +450,7 @@ function cropSlot(
   const canvas = document.createElement("canvas")
   canvas.width = outSize
   canvas.height = outSize
-  const ctx = canvas.getContext("2d")
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })
   if (ctx) {
     ctx.imageSmoothingEnabled = false
     ctx.drawImage(img, gx * gridSize, gy * gridSize, gridSize, gridSize, 0, 0, outSize, outSize)
@@ -586,7 +586,7 @@ export function generateQuadrantStitch(
         const sheet = document.createElement("canvas")
         sheet.width = columns * genTile
         sheet.height = rows * genTile
-        const sctx = sheet.getContext("2d")
+        const sctx = sheet.getContext("2d", { willReadFrequently: true })
         if (!sctx) {
           reject(new Error("无法创建画布上下文"))
           return
@@ -647,7 +647,7 @@ export function generateQuadrantStitch(
             const tc = document.createElement("canvas")
             tc.width = outTileSize
             tc.height = outTileSize
-            const tctx = tc.getContext("2d")
+            const tctx = tc.getContext("2d", { willReadFrequently: true })
             if (tctx) {
               tctx.imageSmoothingEnabled = false
               renderMask(tctx, mask, 0, 0)
@@ -665,7 +665,7 @@ export function generateQuadrantStitch(
             const tileCanvas = document.createElement("canvas")
             tileCanvas.width = genTile
             tileCanvas.height = genTile
-            const tctx = tileCanvas.getContext("2d")
+            const tctx = tileCanvas.getContext("2d", { willReadFrequently: true })
             if (!tctx) {
               reject(new Error("无法创建瓦片画布"))
               return
@@ -773,7 +773,7 @@ export function deriveTilesFromBase(
       const tc = document.createElement("canvas")
       tc.width = size
       tc.height = size
-      const tctx = tc.getContext("2d")
+      const tctx = tc.getContext("2d", { willReadFrequently: true })
       if (!tctx) continue
       tctx.imageSmoothingEnabled = false
       drawSpecTile16(tctx, slots, bMaskToAMask(mask), 0, 0, size)
@@ -797,7 +797,7 @@ export function deriveTilesFromBase(
     const tc = document.createElement("canvas")
     tc.width = genTile
     tc.height = genTile
-    const tctx = tc.getContext("2d")
+    const tctx = tc.getContext("2d", { willReadFrequently: true })
     if (!tctx) continue
     tctx.imageSmoothingEnabled = false
     for (const { q, dx, dy } of quadrants) {

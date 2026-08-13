@@ -50,6 +50,7 @@ export function ModeBGridView() {
   const panStart = useRef({ x: 0, y: 0, px: 0, py: 0 })
   const [hoverCell, setHoverCell] = useState<{ x: number; y: number } | null>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
 
   // 反向映射：源图格子 -> 已绑定槽位（O(1) 查找）
   const slotOfKey = useMemo(() => {
@@ -76,7 +77,7 @@ export function ModeBGridView() {
     canvas.height = baseH * dpr
     canvas.style.width = `${baseW}px`
     canvas.style.height = `${baseH}px`
-    const ctx = canvas.getContext("2d")
+    const ctx = canvas.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, baseW, baseH)
@@ -114,6 +115,34 @@ export function ModeBGridView() {
   useEffect(() => {
     drawOverlay()
   }, [drawOverlay])
+
+  // React 合成 onWheel 在 React 19 中是 passive 监听，无法 preventDefault；
+  // 改用原生 wheel 事件（passive:false），与其它画布组件一致
+  useEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      const rect = stage.getBoundingClientRect()
+      const mx = e.clientX - rect.left
+      const my = e.clientY - rect.top
+      const cx = rect.width / 2
+      const cy = rect.height / 2
+      setView((v) => {
+        const nz = Math.max(0.25, Math.min(4, v.zoom - Math.sign(e.deltaY) * 0.1))
+        const factor = nz / v.zoom
+        return {
+          zoom: nz,
+          pan: {
+            x: mx - cx - (mx - cx - v.pan.x) * factor,
+            y: my - cy - (my - cy - v.pan.y) * factor,
+          },
+        }
+      })
+    }
+    stage.addEventListener("wheel", onWheel, { passive: false })
+    return () => stage.removeEventListener("wheel", onWheel)
+  }, [])
 
   function cellFromEvent(e: { clientX: number; clientY: number }) {
     const canvas = overlayRef.current
@@ -166,28 +195,9 @@ export function ModeBGridView() {
       </div>
 
       <div
+        ref={stageRef}
         className="relative flex-1 overflow-hidden bg-checkerboard"
         style={{ cursor: "default" }}
-        onWheel={(e) => {
-          // 鼠标滚轮缩放，以鼠标位置为中心
-          e.preventDefault()
-          const rect = e.currentTarget.getBoundingClientRect()
-          const mx = e.clientX - rect.left
-          const my = e.clientY - rect.top
-          const cx = rect.width / 2
-          const cy = rect.height / 2
-          setView((v) => {
-            const nz = Math.max(0.25, Math.min(4, v.zoom - Math.sign(e.deltaY) * 0.1))
-            const factor = nz / v.zoom
-            return {
-              zoom: nz,
-              pan: {
-                x: mx - cx - (mx - cx - v.pan.x) * factor,
-                y: my - cy - (my - cy - v.pan.y) * factor,
-              },
-            }
-          })
-        }}
         onPointerDown={(e) => {
           if (e.shiftKey || e.button === 1) {
             panning.current = true

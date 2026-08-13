@@ -33,7 +33,7 @@ function TileCell({ canvas, size }: { canvas?: HTMLCanvasElement; size: number }
   const ref = useRef<HTMLCanvasElement>(null)
   useEffect(() => {
     if (!ref.current || !canvas) return
-    const ctx = ref.current.getContext("2d")
+    const ctx = ref.current.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     ref.current.width = size
     ref.current.height = size

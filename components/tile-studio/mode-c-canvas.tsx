@@ -116,9 +116,10 @@ export default function ModeCCanvas() {
     if (canvases.length === 0) return []
     const maxW = Math.max(...canvases.map((b) => b.canvas.width))
     const maxH = Math.max(...canvases.map((b) => b.canvas.height))
-    // 九宫格布局：图块间距 = 两倍图块大小，四周留白 = 图块大小（与图块尺寸联动）
-    const gap = Math.max(1, Math.round(tileSize * 2))
-    const pad = Math.max(1, Math.round(tileSize))
+    // 九宫格布局：图块间距 = 两倍图块大小，四周留白 = 图块大小。
+    // 基于实际块尺寸（canvas.width）而非 tileSize，保证 47 模式半块（qSize）等比缩放
+    const gap = Math.max(1, Math.round(maxW * 2))
+    const pad = Math.max(1, Math.round(maxW))
     return canvases.map((b, i) => ({
       ...b,
       ox: pad + (i % 3) * (maxW + gap),
@@ -160,8 +161,8 @@ export default function ModeCCanvas() {
     const maxH = Math.max(...blocksRef.current.map((b) => b.canvas.height))
     const cols = Math.min(3, blocksRef.current.length)
     const rows = Math.ceil(blocksRef.current.length / 3)
-    const gap = Math.max(1, Math.round(tileSize * 2))
-    const pad = Math.max(1, Math.round(tileSize))
+    const gap = Math.max(1, Math.round(maxW * 2))
+    const pad = Math.max(1, Math.round(maxW))
     const contentW = pad + cols * maxW + (cols - 1) * gap + pad
     const contentH = pad + rows * maxH + (rows - 1) * gap + pad + 16
     const zoom = Math.max(0.5, Math.min(8, Math.floor(Math.min(w / contentW, h / contentH) * 4) / 4))
@@ -191,7 +192,7 @@ export default function ModeCCanvas() {
       cv.width = Math.round(w * dpr)
       cv.height = Math.round(h * dpr)
     }
-    const ctx = cv.getContext("2d")
+    const ctx = cv.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, w, h)
@@ -315,7 +316,7 @@ export default function ModeCCanvas() {
 
   const commitEdit = (b: Block, mutate: (data: Uint8ClampedArray, w: number, h: number) => void) => {
     const cv = b.canvas
-    const ctx = cv.getContext("2d")!
+    const ctx = cv.getContext("2d", { willReadFrequently: true })!
     const img = ctx.getImageData(0, 0, cv.width, cv.height)
     mutate(img.data, cv.width, cv.height)
     ctx.putImageData(img, 0, 0)
@@ -329,14 +330,14 @@ export default function ModeCCanvas() {
   }
 
   const pickColor = (b: Block, px: number, py: number) => {
-    const ctx = b.canvas.getContext("2d")!
+    const ctx = b.canvas.getContext("2d", { willReadFrequently: true })!
     const d = ctx.getImageData(px, py, 1, 1).data
     setColor({ r: d[0], g: d[1], b: d[2], a: d[3] })
   }
 
   const floodFill = (b: Block, px: number, py: number) => {
     const cv = b.canvas
-    const ctx = cv.getContext("2d")!
+    const ctx = cv.getContext("2d", { willReadFrequently: true })!
     const img = ctx.getImageData(0, 0, cv.width, cv.height)
     const { data, width, height } = img
     const idx = (py * width + px) * 4
@@ -423,7 +424,7 @@ export default function ModeCCanvas() {
     if (tool === "rect" || tool === "line") {
       // 以笔触起点所在块为准（矩形/直线跨块时统一写回起点块）
       const tgt = s.b
-      const ctx = tgt.canvas.getContext("2d")!
+      const ctx = tgt.canvas.getContext("2d", { willReadFrequently: true })!
       ctx.putImageData(s.img, 0, 0) // 先还原笔触起点快照，避免叠加
       const img = ctx.getImageData(0, 0, tgt.canvas.width, tgt.canvas.height)
       if (tool === "rect") drawRectTo(img, s.px0, s.py0, px, py)
@@ -472,7 +473,7 @@ export default function ModeCCanvas() {
       paintPixel(b, px, py)
     }
     // rect / line：记录起点 + 画布像素快照
-    strokeRef.current = { b, px0: px, py0: py, img: b.canvas.getContext("2d")!.getImageData(0, 0, b.canvas.width, b.canvas.height) }
+    strokeRef.current = { b, px0: px, py0: py, img: b.canvas.getContext("2d", { willReadFrequently: true })!.getImageData(0, 0, b.canvas.width, b.canvas.height) }
     if (tool === "rect" || tool === "line") {
       applyStroke(b, px, py)
     }
@@ -480,10 +481,13 @@ export default function ModeCCanvas() {
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (panRef.current) {
+      // 先取快照再更新：函数式 setState 在渲染期执行 reducer，
+      // 若直接读 panRef.current，可能被 onPointerUp 清空而读到 null
+      const pan = panRef.current
       setView((v) => ({
         ...v,
-        tx: panRef.current!.panX + (e.clientX - panRef.current!.x),
-        ty: panRef.current!.panY + (e.clientY - panRef.current!.y),
+        tx: pan.panX + (e.clientX - pan.x),
+        ty: pan.panY + (e.clientY - pan.y),
       }))
       return
     }

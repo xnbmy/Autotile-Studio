@@ -28,7 +28,7 @@ export function composeSheet(orderedTiles: { key: number; canvas: HTMLCanvasElem
   const canvas = document.createElement("canvas")
   canvas.width = width
   canvas.height = height
-  const ctx = canvas.getContext("2d")
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })
   if (ctx) ctx.imageSmoothingEnabled = false
   const positions = new Map<number, { x: number; y: number; col: number; row: number }>()
   orderedTiles.forEach((t, i) => {
