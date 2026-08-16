@@ -2,10 +2,20 @@
 
 import { create } from "zustand"
 import { nanoid } from "nanoid"
-import type { AutotileLayer, BaseCanvases, CanvasView, DrawTool, DualAsset, DualGridLayer, GenParams, Layer, LibraryAsset, MappingType, MapView, Overrides, SourceMode, TileAsset } from "./types"
+import { toast } from "sonner"
+import type { AutotileLayer, BaseCanvases, CanvasView, DrawTool, DualAsset, DualGridLayer, GenParams, Layer, LibraryAsset, MappingType, MapView, Overrides, SourceMode, Stage, TileAsset } from "./types"
 import { DEFAULT_GEN_PARAMS } from "./types"
 import { emptySlotsForType, slotKeysForType } from "./quadrant-stitch"
 import { generateBaseCanvases } from "./asset-factory"
+import {
+  listSavedProjects,
+  readProjectData,
+  writeProjectData,
+  deleteProjectData,
+  serializeCanvases,
+  deserializeCanvases,
+  type SavedProjectMeta,
+} from "./project-save"
 
 /** 按像素深拷贝一张画布（撤销快照必须与活跃画布完全独立） */
 function cloneCanvas(src: HTMLCanvasElement): HTMLCanvasElement {
@@ -45,6 +55,26 @@ interface EditorState {
   // 左侧输入源：procedural（参数生成）/ slice（导入切片）；手绘在中间画布随时可用
   sourceMode: SourceMode
   setSourceMode: (m: SourceMode) => void
+
+  // ── 递进式流程界面状态机 ─────────────────────────────────────────────
+  stage: Stage
+  goTo: (s: Stage) => void
+  // 欢迎页 → 参数生成路径
+  startProcedural: () => void
+  // 参数生成与预览 → 手绘（固化当前参数）
+  freezeParamsAndDraw: () => void
+  // 欢迎页 → 图片导入路径（询问预处理）
+  startSlice: () => void
+  // 询问预处理 → 进入像素处理
+  chooseSlicePreprocess: () => void
+  // 询问预处理 → 跳过，直接切图
+  skipSlicePreprocess: () => void
+  // 像素处理完成 → 切图
+  finishPreprocess: () => void
+  // 切图完成 → 手绘（固化像素）
+  finishSliceAndDraw: () => void
+  // 从任意步骤返回欢迎页（清场）
+  restartToWelcome: () => void
 
   mappingType: MappingType
   setMappingType: (t: MappingType) => void
@@ -108,6 +138,9 @@ interface EditorState {
   setCenterView: (v: CanvasView | ((prev: CanvasView) => CanvasView)) => void
   testView: MapView
   setTestView: (v: MapView | ((prev: MapView) => MapView)) => void
+  // 测试地图涂抹的格子集合（稀疏坐标 "x,y"），提升到 store 以便随项目保存
+  testFill: Set<string>
+  setTestFill: (f: Set<string>) => void
 
   // Mode B state — 16 模式(5 基础块) / 47 模式(13 槽) 共用，按 mappingType 区分槽集
   modeBImage: string | null
@@ -160,11 +193,64 @@ interface EditorState {
   pushUndo: () => void
   undo: () => void
   redo: () => void
+
+  // ── 项目保存 / 恢复（持久化到本机，欢迎页列表可见）─────────────────
+  savedProjects: SavedProjectMeta[]
+  refreshSavedProjects: () => void
+  // 当前项目 id：恢复/保存后记录，再次保存时复用同一记录并在保存框回填名称
+  currentProjectId: string | null
+  setCurrentProjectId: (id: string | null) => void
+  // 保存当前进度（baseCanvases + overrides + 参数），返回生成的 id
+  saveCurrentProject: (name: string, thumbnail?: string) => string
+  // 恢复已保存项目并进入手绘界面
+  loadSavedProject: (id: string) => Promise<void>
+  deleteSavedProject: (id: string) => void
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
   sourceMode: "procedural",
   setSourceMode: (m) => set({ sourceMode: m }),
+
+  stage: { kind: "welcome" },
+  goTo: (s) => set({ stage: s }),
+  startProcedural: () => set({ sourceMode: "procedural", stage: { kind: "procedural.configure" } }),
+  freezeParamsAndDraw: () => {
+    // 固化当前参数为 baseCanvases（干净状态），解除脏标记后进入手绘
+    const { mappingType, tileSize, genParams } = get()
+    set({
+      baseCanvases: generateBaseCanvases(mappingType, tileSize, genParams),
+      overrides: {},
+      undoStack: [],
+      redoStack: [],
+      baseDirty: false,
+      paramDirty: false,
+      lastGenParams: { ...genParams },
+      sourceMode: "procedural",
+      stage: { kind: "procedural.draw" },
+    })
+  },
+  startSlice: () => set({ sourceMode: "slice", stage: { kind: "slice.preprocess-check" } }),
+  chooseSlicePreprocess: () => set({ stage: { kind: "slice.preprocess" } }),
+  skipSlicePreprocess: () => set({ stage: { kind: "slice.cut" } }),
+  finishPreprocess: () => set({ stage: { kind: "slice.cut" } }),
+  finishSliceAndDraw: () => set({ stage: { kind: "slice.draw" } }),
+  restartToWelcome: () =>
+    set({
+      stage: { kind: "welcome" },
+      baseCanvases: {},
+      overrides: {},
+      modeBImage: null,
+      modeBImageSize: null,
+      modeBSlots: emptySlotsForType(get().mappingType),
+      modeBSlot: slotKeysForType(get().mappingType)[0],
+      undoStack: [],
+      redoStack: [],
+      baseDirty: false,
+      paramDirty: false,
+      baseLocked: false,
+      testFill: new Set(),
+      currentProjectId: null,
+    }),
 
   mappingType: "16",
   setMappingType: (t) => {
@@ -339,6 +425,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   testView: { zoom: 1, px: 0, py: 0 },
   setTestView: (v) =>
     set((s) => ({ testView: typeof v === "function" ? v(s.testView) : v })),
+  testFill: new Set(),
+  setTestFill: (f) => set({ testFill: f }),
 
   modeBImage: null,
   modeBImageSize: null,
@@ -357,6 +445,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       dataUrl && !gridSizeManual && size
         ? Math.max(1, Math.min(autoGrid, size.w, size.h))
         : get().modeBGridSize
+    // 切换图片时自动清空当前槽位选择（重置为第一个槽位）
+    if (dataUrl) get().clearModeBSlots()
     set({
       modeBImage: dataUrl,
       modeBImageSize: size,
@@ -479,6 +569,83 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       overrides: next.overrides,
       baseDirty: next.baseDirty,
     })
+  },
+
+  savedProjects: listSavedProjects(),
+  refreshSavedProjects: () => set({ savedProjects: listSavedProjects() }),
+  currentProjectId: null,
+  setCurrentProjectId: (id) => set({ currentProjectId: id }),
+  saveCurrentProject: (name, thumbnail) => {
+    const s = get()
+    // 若当前项目已存在，复用其 id 更新同一记录（不重复创建）；否则新建
+    const reuseId =
+      s.currentProjectId && listSavedProjects().some((m) => m.id === s.currentProjectId)
+    const id = reuseId ? s.currentProjectId! : nanoid(8)
+    const data = {
+      id,
+      name,
+      savedAt: Date.now(),
+      sourceMode: s.sourceMode,
+      mappingType: s.mappingType,
+      tileSize: s.tileSize,
+      genParams: { ...s.genParams },
+      baseDirty: s.baseDirty,
+      thumbnail: thumbnail ?? "",
+      baseCanvases: serializeCanvases(s.baseCanvases),
+      overrides: serializeCanvases(s.overrides),
+      modeBImage: s.modeBImage,
+      modeBImageSize: s.modeBImageSize,
+      modeBGridSize: s.modeBGridSize,
+      modeBSlots: { ...s.modeBSlots },
+      centerView: s.centerView,
+      testView: s.testView,
+      testFill: Array.from(s.testFill),
+    }
+    writeProjectData(data)
+    set({ savedProjects: listSavedProjects(), currentProjectId: id })
+    return id
+  },
+  loadSavedProject: async (id) => {
+    const s = get()
+    const data = readProjectData(id)
+    if (!data) {
+      toast.error("项目数据缺失或已损坏")
+      return
+    }
+    const [baseCanvases, overrides] = await Promise.all([
+      deserializeCanvases(data.baseCanvases),
+      deserializeCanvases(data.overrides),
+    ])
+    // 恢复时若 mappingType 与当前不同，重置切片槽位
+    const slots =
+      data.mappingType === s.mappingType ? data.modeBSlots : emptySlotsForType(data.mappingType)
+    set({
+      stage: { kind: data.sourceMode === "slice" ? "slice.draw" : "procedural.draw" },
+      sourceMode: data.sourceMode,
+      mappingType: data.mappingType,
+      tileSize: data.tileSize,
+      genParams: { ...data.genParams },
+      baseDirty: data.baseDirty,
+      baseLocked: false,
+      paramDirty: false,
+      lastGenParams: { ...data.genParams },
+      baseCanvases,
+      overrides,
+      modeBImage: data.modeBImage,
+      modeBImageSize: data.modeBImageSize,
+      modeBGridSize: data.modeBGridSize,
+      modeBSlots: slots,
+      centerView: data.centerView,
+      testView: data.testView,
+      testFill: new Set(data.testFill ?? []),
+      undoStack: [],
+      redoStack: [],
+      currentProjectId: id,
+    })
+  },
+  deleteSavedProject: (id) => {
+    deleteProjectData(id)
+    set({ savedProjects: listSavedProjects() })
   },
 }))
 

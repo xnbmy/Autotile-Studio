@@ -77,8 +77,10 @@ export default function ModeCTestMap() {
     [baseCanvases, mappingType, tileSize, overrides],
   )
 
-  const [fill, setFill] = useState<Fill>(() => new Set())
   const [brush, setBrush] = useState<"paint" | "erase">("paint")
+  // 涂抹格子集提升到 store，随项目保存/恢复
+  const fill = useEditorStore((s) => s.testFill)
+  const setFill = useEditorStore((s) => s.setTestFill)
   // 视口存 store：切页/切换输入源后回到原视角
   const view = useEditorStore((s) => s.testView)
   const setView = useEditorStore((s) => s.setTestView)
@@ -94,10 +96,11 @@ export default function ModeCTestMap() {
   const cell = Math.max(4, Math.round(tileSize))
 
   // 计算自适应视图（无限绘制：初始居中到世界原点，默认显示 24×32 区域）
+  // 允许放大填满容器（与左上面板一致），避免内容较小时露出黑框
   const fitView = useCallback(
     (w: number, h: number): View => {
       if (w <= 0 || h <= 0) return { zoom: 1, px: 0, py: 0 }
-      const z = Math.max(MIN_ZOOM, Math.min(1, (w - 24) / (24 * cell), (h - 24) / (32 * cell)))
+      const z = Math.max(MIN_ZOOM, Math.min(8, (w - 24) / (24 * cell), (h - 24) / (32 * cell)))
       return {
         zoom: z,
         px: Math.round(w / 2),
@@ -122,7 +125,7 @@ export default function ModeCTestMap() {
       if (minX === Infinity) return
       const contentW = (maxX - minX + 1) * cell
       const contentH = (maxY - minY + 1) * cell
-      const z = Math.max(MIN_ZOOM, Math.min(1, (size.w - 24) / contentW, (size.h - 24) / contentH))
+      const z = Math.max(MIN_ZOOM, Math.min(8, (size.w - 24) / contentW, (size.h - 24) / contentH))
       setView({
         zoom: z,
         px: Math.round(size.w / 2 - ((minX + maxX + 1) / 2) * cell * z),
@@ -132,7 +135,7 @@ export default function ModeCTestMap() {
     [cell, size],
   )
 
-  // 容器尺寸；未手动交互时自动重新 fit
+  // 容器尺寸跟踪：尺寸变化时始终重新 fit，避免拖拽分隔条后出现黑框
   useEffect(() => {
     const wrap = wrapRef.current
     if (!wrap) return
@@ -140,7 +143,7 @@ export default function ModeCTestMap() {
       const w = wrap.clientWidth
       const h = wrap.clientHeight
       setSize({ w, h })
-      if (!interactedRef.current) setView(fitView(w, h))
+      setView(fitView(w, h))
     }
     update()
     const ro = new ResizeObserver(update)
@@ -148,21 +151,24 @@ export default function ModeCTestMap() {
     return () => ro.disconnect()
   }, [fitView])
 
-  // 渲染
+  // 渲染：直接从 DOM 读取容器尺寸，避免 state 滞后导致 Canvas 缓冲区与 CSS 尺寸脱节
   useEffect(() => {
     const cv = canvasRef.current
-    if (!cv) return
+    const wrap = wrapRef.current
+    if (!cv || !wrap) return
     const dpr = window.devicePixelRatio || 1
-    if (size.w === 0 || size.h === 0) return
-    if (cv.width !== Math.round(size.w * dpr) || cv.height !== Math.round(size.h * dpr)) {
-      cv.width = Math.round(size.w * dpr)
-      cv.height = Math.round(size.h * dpr)
+    const cw = wrap.clientWidth
+    const ch = wrap.clientHeight
+    if (cw === 0 || ch === 0) return
+    if (cv.width !== Math.round(cw * dpr) || cv.height !== Math.round(ch * dpr)) {
+      cv.width = Math.round(cw * dpr)
+      cv.height = Math.round(ch * dpr)
     }
     const ctx = cv.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.imageSmoothingEnabled = false
-    ctx.clearRect(0, 0, size.w, size.h)
+    ctx.clearRect(0, 0, cw, ch)
 
     if (tiles.size === 0) {
       ctx.fillStyle = "#94a3b8"
@@ -262,18 +268,18 @@ export default function ModeCTestMap() {
 
   const paintCell = (x: number, y: number) => {
     const key = `${x},${y}`
-    setFill((prev) => {
-      if (brush === "paint") {
-        if (prev.has(key)) return prev
-        const next = new Set(prev)
-        next.add(key)
-        return next
-      }
-      if (!prev.has(key)) return prev
+    const prev = fillRef.current
+    if (brush === "paint") {
+      if (prev.has(key)) return
       const next = new Set(prev)
-      next.delete(key)
-      return next
-    })
+      next.add(key)
+      setFill(next)
+      return
+    }
+    if (!prev.has(key)) return
+    const next = new Set(prev)
+    next.delete(key)
+    setFill(next)
   }
 
   const onDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -335,7 +341,7 @@ export default function ModeCTestMap() {
   const resetView = () => setView(fitView(size.w, size.h))
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full w-full flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-1.5 text-xs text-zinc-400">
         <span>手绘测试区 · 涂抹地图联动派生瓦片</span>
         <div className="flex items-center gap-1">

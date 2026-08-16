@@ -1,5 +1,31 @@
 use std::process::Command;
 
+/// 用系统默认浏览器打开指定 URL。
+/// 通过系统自带 PowerShell 的 Start-Process 实现，无需 opener 插件；
+/// URL 经环境变量传递，规避 PowerShell 引号转义问题。
+#[tauri::command]
+async fn open_url(url: String) -> Result<(), String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let script = "Start-Process $env:AT_URL";
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NoLogo", "-Command", script])
+      .env("AT_URL", &url);
+    // CREATE_NO_WINDOW：禁止创建控制台窗口，避免弹出命令框
+    #[cfg(windows)]
+    {
+      use std::os::windows::process::CommandExt;
+      cmd.creation_flags(0x08000000);
+    }
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if !out.status.success() {
+      return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(())
+  })
+  .await
+  .map_err(|e| e.to_string())?
+}
+
 /// 弹出系统「另存为」对话框，由用户选择目标文件夹与文件名。
 /// 通过系统自带 PowerShell + WinForms 实现，无需额外原生依赖。
 /// 返回用户确认的完整保存路径；取消对话框返回 null。
@@ -46,7 +72,7 @@ async fn write_bytes(path: String, data: Vec<u8>) -> Result<(), String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![choose_save_path, write_bytes])
+    .invoke_handler(tauri::generate_handler![open_url, choose_save_path, write_bytes])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

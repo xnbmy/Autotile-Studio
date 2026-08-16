@@ -166,12 +166,23 @@ export default function ModeCCanvas() {
     })
   }, [tileSize])
 
-  // 空→非空时自动适配
+  // 空→非空时自动适配；若首次尝试时容器尺寸未就绪（w/h 为 0）则跳过，
+  // 由下方 size 就绪 effect 在尺寸可用后补一次适配，避免进入时沿用旧视口产生偏移
   const prevLen = useRef(0)
+  const fittedRef = useRef(false)
   useEffect(() => {
-    if (blocks.length > 0 && prevLen.current === 0) fit()
+    if (blocks.length > 0 && prevLen.current === 0) fittedRef.current = false
     prevLen.current = blocks.length
-  }, [blocks, fit])
+  }, [blocks])
+
+  // 容器尺寸就绪且已有基础块、本次挂载尚未适配时，强制执行一次适配
+  useEffect(() => {
+    if (fittedRef.current) return
+    if (size.w === 0 || size.h === 0) return
+    if (blocksRef.current.length === 0) return
+    fit()
+    fittedRef.current = true
+  }, [size, blocks, fit])
 
   // 绘制主循环
   useEffect(() => {
@@ -209,6 +220,13 @@ export default function ModeCCanvas() {
         ctx.drawImage(b.canvas, sx + dx * sw, sy + dy * sh, sw, sh)
       }
       ctx.globalAlpha = 1
+
+      // ∞ 通透开启时，围绕中心块的 8 副本构成 3×3 九宫格，用浅白色细线标示其整体范围
+      if (drawTileTransparent) {
+        ctx.strokeStyle = "rgba(255,255,255,0.35)"
+        ctx.lineWidth = 1
+        ctx.strokeRect(sx - sw - 0.5, sy - sh - 0.5, sw * 3 + 1, sh * 3 + 1)
+      }
 
       ctx.strokeStyle = "rgba(148,163,184,0.75)"
       ctx.lineWidth = 1

@@ -19,7 +19,7 @@ import { Input } from "@/components/ui/input"
 import { FieldLabel } from "@/components/ui/field"
 import { Switch } from "@/components/ui/switch"
 import { HoverHelp } from "@/components/ui/hover-help"
-import { Upload, Brush } from "lucide-react"
+import { Upload, Brush, RotateCcw } from "lucide-react"
 import { toast } from "sonner"
 
 /**
@@ -95,9 +95,11 @@ export function ModeBPanel() {
   const slot = useEditorStore((s) => s.modeBSlot)
   const setSlot = useEditorStore((s) => s.setModeBSlot)
   const slots = useEditorStore((s) => s.modeBSlots)
+  const clearModeBSlots = useEditorStore((s) => s.clearModeBSlots)
   const setBaseCanvases = useEditorStore((s) => s.setBaseCanvases)
   const setOverrides = useEditorStore((s) => s.setOverrides)
   const setBaseDirty = useEditorStore((s) => s.setBaseDirty)
+  const finishSliceAndDraw = useEditorStore((s) => s.finishSliceAndDraw)
 
   function handleFile(file: File) {
     const reader = new FileReader()
@@ -106,9 +108,8 @@ export function ModeBPanel() {
       img.crossOrigin = "anonymous"
       img.onload = () => {
         setImage(reader.result as string, { w: img.width, h: img.height })
-        // 导入图片后自动选中第一个未绑定的槽位
-        const firstEmpty = slotKeys.find((k) => !slots[k])
-        if (firstEmpty) setSlot(firstEmpty)
+        // 切换图片时 store 已自动清空槽位，这里激活第一个槽位
+        setSlot(slotKeys[0])
       }
       img.src = reader.result as string
     }
@@ -130,11 +131,12 @@ export function ModeBPanel() {
       const base = await buildBaseFromSliceSlots({ image, gridSize, slots, slotKeys, mappingType, tileSize })
       setBaseCanvases(base)
       setOverrides({}) // 固化时清空旧的单格微调
-      // 切片固化的像素属于源素材：标脏防止参数实时生成覆写；
-      // 固化后停留在切图页，中间画布立即展示固化结果，无需切换界面
+      // 切片固化的像素属于源素材：标脏防止参数实时生成覆写
       setBaseDirty(true)
+      // 递进式流程：固化完成后自动进入手绘界面
+      finishSliceAndDraw()
       toast.success("已固化为像素", {
-        description: `${slotKeys.length} 个基础块已写入中间画布，可继续手绘微调`,
+        description: `${slotKeys.length} 个基础块已写入画布，进入手绘细化`,
       })
     } catch (err) {
       toast.error("固化失败", { description: err instanceof Error ? err.message : "未知错误" })
@@ -223,7 +225,7 @@ export function ModeBPanel() {
         </div>
 
         {/* 槽位选择：横向排版 */}
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           {slotKeys.map((k) => (
             <button
               key={k}
@@ -239,6 +241,15 @@ export function ModeBPanel() {
               {slots[k] && <span className="size-1.5 rounded-full bg-emerald-400" title="已绑定" />}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={clearModeBSlots}
+            className="ml-auto flex items-center gap-1 rounded-md border border-dashed border-muted-foreground/40 px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:border-destructive/50 hover:text-destructive"
+            title="清空当前所有槽位选择"
+          >
+            <RotateCcw data-icon="inline-start" />
+            清空选择
+          </button>
         </div>
       </div>
 

@@ -60,8 +60,8 @@ export function SlicePickerInline() {
       img.crossOrigin = "anonymous"
       img.onload = () => {
         setImage(reader.result as string, { w: img.width, h: img.height })
-        const firstEmpty = slotKeys.find((k) => !slots[k])
-        if (firstEmpty) setSlot(firstEmpty)
+        // 切换图片时 store 已自动清空槽位，这里激活第一个槽位
+        setSlot(slotKeys[0])
       }
       img.onerror = () => {
         /* 非图片文件：忽略 */

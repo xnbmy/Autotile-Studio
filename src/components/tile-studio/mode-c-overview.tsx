@@ -98,7 +98,8 @@ export function ModeCOverview() {
       if (!t) return
       const contentW = PAD * 2 + cols * t.width
       const contentH = PAD * 2 + rows * t.width
-      const zoom = Math.max(0.1, Math.min(1, (w - 8) / contentW, (h - 8) / contentH))
+      // 允许放大填满容器（不只是缩小到 ≤1）：让网格尽量铺满预览区，不留黑框
+      const zoom = Math.max(0.1, Math.min(8, (w - 8) / contentW, (h - 8) / contentH))
       setView({
         zoom,
         tx: Math.round((w - contentW * zoom) / 2),
@@ -108,25 +109,41 @@ export function ModeCOverview() {
     [order, cols, rows],
   )
 
-  // 初始 / 尺寸变化自动适配；用户交互后不再覆盖
+  // 初始 / 瓦片就绪 / 容器尺寸变化时自动适配填满容器。
+  // 关键：容器尺寸变化时总是重新适配（即使用户手动缩放过），否则拖拽分隔条变大后会出现黑框。
+  // 瓦片首次出现且用户未手动交互时，也自动适配。
+  const prevTilesCount = useRef(0)
+  const prevSizeRef = useRef({ w: 0, h: 0 })
   useEffect(() => {
-    if (!interactedRef.current) fitView(size.w, size.h)
-  }, [fitView, size])
+    const n = tiles.size
+    const sizeChanged = prevSizeRef.current.w !== size.w || prevSizeRef.current.h !== size.h
+    prevSizeRef.current = size
+    const tilesAppeared = n > 0 && prevTilesCount.current === 0
+    prevTilesCount.current = n
+    if (sizeChanged) {
+      fitView(size.w, size.h)
+    } else if (tilesAppeared && !interactedRef.current) {
+      fitView(size.w, size.h)
+    }
+  }, [tiles, size, fitView])
 
-  // 渲染
+  // 渲染：直接从 DOM 读取容器尺寸，避免 state 滞后导致 Canvas 缓冲区与 CSS 尺寸脱节
   useEffect(() => {
     const cv = canvasRef.current
-    if (!cv) return
+    const wrap = wrapRef.current
+    if (!cv || !wrap) return
     const dpr = window.devicePixelRatio || 1
-    if (size.w === 0 || size.h === 0) return
-    if (cv.width !== Math.round(size.w * dpr) || cv.height !== Math.round(size.h * dpr)) {
-      cv.width = Math.round(size.w * dpr)
-      cv.height = Math.round(size.h * dpr)
+    const cw = wrap.clientWidth
+    const ch = wrap.clientHeight
+    if (cw === 0 || ch === 0) return
+    if (cv.width !== Math.round(cw * dpr) || cv.height !== Math.round(ch * dpr)) {
+      cv.width = Math.round(cw * dpr)
+      cv.height = Math.round(ch * dpr)
     }
     const ctx = cv.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, size.w, size.h)
+    ctx.clearRect(0, 0, cw, ch)
     ctx.imageSmoothingEnabled = false
 
     if (tiles.size === 0) {
@@ -628,7 +645,7 @@ export function ModeCOverview() {
   const overrideCount = Object.keys(overrides).length
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full w-full flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-zinc-800 px-3 py-1.5 text-xs text-zinc-400">
         <span>
           {mappingType === "16" ? "16 模式" : "47 模式"}全部瓦片 · {tiles.size} 张
@@ -665,7 +682,7 @@ export function ModeCOverview() {
           {" · "}滚轮缩放 · 中键/右键拖拽平移
         </span>
       </div>
-      <div ref={wrapRef} className="relative min-h-0 flex-1 bg-checkerboard">
+      <div ref={wrapRef} className="relative min-h-0 flex-1 overflow-hidden bg-checkerboard">
         <canvas
           ref={canvasRef}
           className="h-full w-full touch-none"

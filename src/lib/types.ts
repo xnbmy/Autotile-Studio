@@ -4,6 +4,17 @@ export type MappingType = "16" | "47"
 // 手绘/切片固化通过 baseDirty 脏标记与参数实时生成互斥（防误触闸门）。
 export type SourceMode = "procedural" | "slice"
 
+// ── 递进式流程界面状态机（界面编排的唯一事实来源）────────────────────────
+// welcome=欢迎页；procedural.*=参数生成路径；slice.*=图片导入路径。
+export type Stage =
+  | { kind: "welcome" }                           // 欢迎页
+  | { kind: "procedural.configure" }              // 参数生成与预览
+  | { kind: "procedural.draw" }                   // 参数路径 · 手绘
+  | { kind: "slice.preprocess-check" }            // 询问是否预处理
+  | { kind: "slice.preprocess" }                  // 像素处理界面
+  | { kind: "slice.cut" }                         // 切图界面
+  | { kind: "slice.draw" }                        // 切片路径 · 手绘
+
 // 画布视口（存入 store，跨挂载/切页记忆）
 export interface CanvasView {
   zoom: number
