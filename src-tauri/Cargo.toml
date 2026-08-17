@@ -1,6 +1,6 @@
 [package]
 name = "autotile-studio"
-version = "0.2.0"
+version = "0.2.7"
 description = "Autotile Studio - 自动图块生成桌面应用"
 authors = ["xnbmy"]
 edition = "2021"

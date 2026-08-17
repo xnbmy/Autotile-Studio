@@ -81,7 +81,8 @@ export function ModeAPreview({
         const col = i % cols
         const row = Math.floor(i / cols)
         const tile = document.createElement("canvas")
-        renderDualTileArc(tile, size, bMaskToAMask(DUAL_GRID_16_ORDER[i]), debouncedParams.color, "#8a6642", debouncedParams.erosionStrength, debouncedParams.edgeHighlight, debouncedParams.edgeThickness, debouncedParams.seed)
+        // 图块6/9（对角）取消特殊连接处理：diagConnect=false（与之前的算法一致）
+        renderDualTileArc(tile, size, bMaskToAMask(DUAL_GRID_16_ORDER[i]), debouncedParams.color, "#8a6642", debouncedParams.erosionStrength, debouncedParams.edgeHighlight, debouncedParams.edgeThickness, debouncedParams.seed, false)
         ctx.drawImage(tile, col * size, row * size)
       }
     } else {
@@ -95,7 +96,8 @@ export function ModeAPreview({
         for (let c = 0; c < cols; c++) {
           const bits = gridBits(3, r, c)
           const tile = document.createElement("canvas")
-          renderTile(tile, size, bits, debouncedParams, r * cols + c, true)
+          // 与之前的算法一致：关闭对角角部连接处理（仅上下左右四边裁剪）
+          renderTile(tile, size, bits, debouncedParams, r * cols + c, false)
           ctx.drawImage(tile, c * size, r * size)
         }
       }

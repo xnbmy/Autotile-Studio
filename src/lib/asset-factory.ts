@@ -1,8 +1,8 @@
 import { nanoid } from "nanoid"
 import { BLOB47, encodeBlob47 } from "./tile-mapping"
-import { renderTile } from "./texture-generator"
+import { renderTile, renderBlob5Asset } from "./texture-generator"
 import { renderDualTile, renderDualTileArc, DUAL_MASK_LIST } from "./dual-grid"
-import { maskToBits, bMaskToAMask } from "./quadrant-stitch"
+import { bMaskToAMask } from "./quadrant-stitch"
 import type { BaseCanvases, DualAsset, GenParams, MappingType, TileAsset } from "./types"
 
 export function generateTileAsset(name: string, mappingType: MappingType, tileSize: number, params: GenParams): TileAsset {
@@ -121,46 +121,14 @@ export function generateBaseCanvases(mappingType: MappingType, tileSize: number,
       out[key] = rot === 0 ? canvas : rotateCanvas(canvas, rot)
     }
   } else {
-    // 47 映射：5 个半块（qSize）基础块，直接从「实时预览同款」renderTile 输出中
-    // 裁取对应象限。这样固化为像素后的形状、腐蚀噪声、边缘高光与参数化实时预览
-    // 完全一致，腐蚀强度/边缘厚度/高光/seed 等参数也会像预览一样实时影响像素。
-    // 每个基础块取 BLOB5_XF 的「基准朝向」对应的槽位 art（deriveTilesFromBase 1:1 拼合）：
-    //   outer = TR_OUTER（mask 64：只 w 草）的 TR 象限
-    //   inner = BL_INNER（mask 5：n+e 草）的 TR 象限
-    //   edge  = TOP_EDGE（mask 64）的 TL 象限
-    //   solid = CENTER_SOLID（mask 193：n+w+nw 草）的 TL 象限
-    //   empty = 全透明背景
-    const qSize = Math.max(1, Math.round(tileSize / 2))
-    const extractQuadrant = (mask: number, corner: "TL" | "TR" | "BL" | "BR") => {
-      const full = document.createElement("canvas")
-      renderTile(full, tileSize, maskToBits(mask), params, mask, true)
-      const out = document.createElement("canvas")
-      out.width = qSize
-      out.height = qSize
-      const octx = out.getContext("2d", { willReadFrequently: true })
-      if (!octx) return out
-      octx.imageSmoothingEnabled = false
-      octx.drawImage(
-        full,
-        corner === "TR" || corner === "BR" ? qSize : 0,
-        corner === "BL" || corner === "BR" ? qSize : 0,
-        qSize,
-        qSize,
-        0,
-        0,
-        qSize,
-        qSize,
-      )
-      return out
+    // 47 映射：5 个素材（整块 tileSize，与拼合输出瓦片同尺寸）。
+    // 朝向基准与固化/手绘一致（2×2 量化）：outer=0010 草左下、solid=1111、
+    // empty=0000、inner=1011 凹口右上、edge=0011 草下半。
+    for (const k of ["outer", "inner", "edge", "solid", "empty"] as const) {
+      const canvas = document.createElement("canvas")
+      renderBlob5Asset(canvas, tileSize, k, params)
+      out[k] = canvas
     }
-    out.outer = extractQuadrant(0b01000000, "TR")
-    out.inner = extractQuadrant(0b00000101, "TR")
-    out.edge = extractQuadrant(0b01000000, "TL")
-    out.solid = extractQuadrant(0b11000001, "TL")
-    const bg = document.createElement("canvas")
-    bg.width = qSize
-    bg.height = qSize
-    out.empty = bg
   }
 
   return out

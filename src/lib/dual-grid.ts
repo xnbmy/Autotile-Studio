@@ -103,6 +103,7 @@ export function renderDualTileArc(
   edgeHighlight = 1,
   edgeThickness = 2,
   seed = 12345,
+  diagConnect = true,
 ) {
   canvas.width = size
   canvas.height = size
@@ -173,6 +174,18 @@ export function renderDualTileArc(
       if (bl && br) return y - R         // bottom edge (mask 12): y > R
       if (tl && bl) return R - x         // left edge (mask 5): x < R
       /* tr && br */ return x - R        // right edge (mask 10): x > R
+    }
+    if (grassCount === 2 && isDiag && !diagConnect) {
+      // 取消对角连接特殊处理（实时预览的图块6/9）：两个对角草角各自独立凸起，
+      // 中间不再渲染连通的 S 曲线带。
+      let best = -Infinity
+      for (const c of CORNERS) {
+        if (c.on) {
+          const d = R - cornerDist(x - c.cx, y - c.cy)
+          if (d > best) best = d
+        }
+      }
+      return best
     }
     // 2 diagonal (S-curve band) or 3 grass (concave notch): fill tile, erase
     // rounded-square quarter-sectors at each dirt corner.

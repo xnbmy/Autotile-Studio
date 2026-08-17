@@ -1,6 +1,6 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useRef } from "react"
 import { useEditorStore } from "@/lib/store"
 import {
   DUAL16_SLOT_KEYS,
@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input"
 import { FieldLabel } from "@/components/ui/field"
 import { Switch } from "@/components/ui/switch"
 import { HoverHelp } from "@/components/ui/hover-help"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Upload, Brush, RotateCcw } from "lucide-react"
 import { toast } from "sonner"
 
@@ -74,13 +75,13 @@ export function ModeBPanel() {
   const setImage = useEditorStore((s) => s.setModeBImage)
   const gridSize = useEditorStore((s) => s.modeBGridSize)
   const setGridSize = useEditorStore((s) => s.setModeBGridSize)
-  const gridSizeManual = useEditorStore((s) => s.gridSizeManual)
   const setGridSizeManual = useEditorStore((s) => s.setGridSizeManual)
+  const sliceFreePlace = useEditorStore((s) => s.sliceFreePlace)
+  const setSliceFreePlace = useEditorStore((s) => s.setSliceFreePlace)
+  const modeBSlotFreePos = useEditorStore((s) => s.modeBSlotFreePos)
+  const setMappingType = useEditorStore((s) => s.setMappingType)
   const tileSize = useEditorStore((s) => s.tileSize)
   const mappingType = useEditorStore((s) => s.mappingType)
-
-  // 自动推算切片粒度：16 模式整块切片→tileSize，47 模式半块→固定32
-  const autoGrid = mappingType === "16" ? Math.max(1, Math.round(tileSize)) : 32
 
   // 当前映射表对应的槽集（16 模式 5 基础块，47 模式 5 半块）
   const isDual16 = mappingType === "16"
@@ -88,10 +89,6 @@ export function ModeBPanel() {
   const slotLabels: Record<string, string> = isDual16 ? DUAL16_LABELS : BLOB5_LABELS
   const slotColors: Record<string, string> = isDual16 ? DUAL16_COLORS : BLOB5_COLORS
 
-  // 输入时只更新本地值，失焦/回车才提交到 store，避免实时重建上千格网格导致卡顿
-  const [gridDrag, setGridDrag] = useState<number | null>(null)
-  // 手动关闭时显示自动值；手动开启时显示用户输入/拖动值
-  const displayGrid = gridSizeManual ? (gridDrag ?? gridSize) : autoGrid
   const slot = useEditorStore((s) => s.modeBSlot)
   const setSlot = useEditorStore((s) => s.setModeBSlot)
   const slots = useEditorStore((s) => s.modeBSlots)
@@ -99,6 +96,7 @@ export function ModeBPanel() {
   const setBaseCanvases = useEditorStore((s) => s.setBaseCanvases)
   const setOverrides = useEditorStore((s) => s.setOverrides)
   const setBaseDirty = useEditorStore((s) => s.setBaseDirty)
+  const setSlotCropPos = useEditorStore((s) => s.setSlotCropPos)
   const finishSliceAndDraw = useEditorStore((s) => s.finishSliceAndDraw)
 
   function handleFile(file: File) {
@@ -119,6 +117,22 @@ export function ModeBPanel() {
   // 固化像素：仅当全部槽位已绑定（16 模式 5 基础块 / 47 模式 5 半块）；47 完整 14 槽已移除
   const canFreeze = !!image && slotKeys.every((k) => slots[k])
 
+  /** 计算每个槽位区域的左上角像素坐标：自由放置用自由坐标，否则用网格格点 */
+  function slotPixelPositions(): Record<string, { x: number; y: number }> {
+    const out: Record<string, { x: number; y: number }> = {}
+    for (const k of slotKeys) {
+      const key = slots[k]
+      if (!key) continue
+      if (sliceFreePlace && modeBSlotFreePos[k]) {
+        out[k] = modeBSlotFreePos[k]!
+      } else {
+        const [col, row] = key.split(",").map(Number)
+        out[k] = { x: col * gridSize, y: row * gridSize }
+      }
+    }
+    return out
+  }
+
   /** 把当前绑定的 5 块槽位素材提取为基础像素块并写入中间画布 */
   async function handleFreeze() {
     if (!image || !imageSize) return
@@ -128,7 +142,17 @@ export function ModeBPanel() {
       return
     }
     try {
-      const base = await buildBaseFromSliceSlots({ image, gridSize, slots, slotKeys, mappingType, tileSize })
+      const positions = slotPixelPositions()
+      // 用固化时的真实裁剪原点初始化各槽位选框位置，供「对齐微调」从当前位置起步（避免首移偏移）
+      setSlotCropPos(positions)
+      const base = await buildBaseFromSliceSlots({
+        image,
+        gridSize,
+        slotPositions: positions,
+        slotKeys,
+        mappingType,
+        tileSize,
+      })
       setBaseCanvases(base)
       setOverrides({}) // 固化时清空旧的单格微调
       // 切片固化的像素属于源素材：标脏防止参数实时生成覆写
@@ -147,6 +171,32 @@ export function ModeBPanel() {
     <div className="flex h-full flex-col overflow-hidden">
       {/* 顶部紧凑控制区 */}
       <div className="shrink-0 space-y-2 border-b border-border bg-sidebar p-2">
+        {/* 映射表选择（16 / 47） */}
+        <div className="flex items-center gap-2">
+          <FieldLabel className="shrink-0">
+            <HoverHelp label="映射表">
+              <p className="mb-1 font-medium">映射表</p>
+              <p>
+                选择自动图块映射表：16 块（4 位四角双网格）或 47 块（8 邻居 Blob）。
+                切换会重置当前槽位选择。
+              </p>
+            </HoverHelp>
+            映射表
+          </FieldLabel>
+          <Select
+            value={mappingType}
+            onValueChange={(v) => setMappingType(v as typeof mappingType)}
+          >
+            <SelectTrigger className="h-8 w-[90px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="16">16 块</SelectItem>
+              <SelectItem value="47">47 块</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
         <input
           ref={fileRef}
           type="file"
@@ -159,14 +209,14 @@ export function ModeBPanel() {
           {image ? "更换图片" : "导入图片"}
         </Button>
 
-        {/* 切块大小 + 固化为像素（横向并列） */}
+        {/* 切块大小 + 自由放置 + 固化为像素 */}
         <div className="flex items-center gap-2">
           <FieldLabel className="shrink-0">
             <HoverHelp label="切块大小">
               <p className="mb-1 font-medium">切块大小（源图网格）</p>
               <p>
                 把导入图片按此像素大小切成方格，下方网格即为切片大小。默认跟随「图块大小」自动推算：
-                16 块双网格 → 图块大小，47 块 → 固定 32。开启右侧开关可手动覆盖。
+                16 块双网格 → 图块大小，47 块 → 图块大小的一半，保证选择区域与输出尺寸一致。此处可实时调整。
               </p>
             </HoverHelp>
             切块大小
@@ -176,41 +226,27 @@ export function ModeBPanel() {
             min={4}
             max={256}
             step={1}
-            value={displayGrid}
-            disabled={!gridSizeManual}
+            value={gridSize}
             onChange={(e) => {
               const v = Number(e.target.value)
-              if (v >= 1) setGridDrag(v)
-            }}
-            onBlur={(e) => {
-              const v = Number(e.target.value)
-              if (v >= 1) { setGridSize(v); setGridDrag(null) }
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                const v = Number((e.target as HTMLInputElement).value)
-                if (v >= 1) { setGridSize(v); setGridDrag(null) }
-                ;(e.target as HTMLInputElement).blur()
+              // 用户一旦调整即锁定为手动，避免后续 tileSize 变化再次自动覆写网格
+              if (v >= 1) {
+                setGridSize(v)
+                setGridSizeManual(true)
               }
             }}
-            className={`h-8 w-16 font-mono text-xs ${!gridSizeManual ? "cursor-not-allowed opacity-60" : ""}`}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") (e.target as HTMLInputElement).blur()
+            }}
+            className="h-8 w-16 font-mono text-xs"
           />
           <span className="text-[11px] text-muted-foreground">px</span>
           <Switch
-            checked={gridSizeManual}
-            onCheckedChange={(checked) => {
-              if (checked) {
-                setGridSize(autoGrid)
-                setGridSizeManual(true)
-              } else {
-                setGridSize(autoGrid)
-                setGridSizeManual(false)
-              }
-              setGridDrag(null)
-            }}
-            aria-label="手动切换切片粒度"
+            checked={sliceFreePlace}
+            onCheckedChange={setSliceFreePlace}
+            aria-label="自由放置图块选择位置"
           />
-          {!gridSizeManual && <span className="text-[10px] text-muted-foreground">自动</span>}
+          <span className="text-[10px] text-muted-foreground">{sliceFreePlace ? "自由放置" : "贴齐网格"}</span>
           <div className="ml-auto">
             <Button
               size="xs"

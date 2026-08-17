@@ -1,14 +1,17 @@
 "use client"
 
+import { useState } from "react"
 import { useEditorStore } from "@/lib/store"
 import { Button } from "@/components/ui/button"
 import { WindowControls, isTauriDesktop } from "@/components/tile-studio/window-controls"
-import { ChevronLeft, Home } from "lucide-react"
+import { HelpDialog } from "@/components/tile-studio/help-dialog"
+import { ChevronLeft, Home, CircleQuestionMark } from "lucide-react"
 import type { Stage } from "@/lib/types"
 
 /** 步骤条面板：根据当前 stage 渲染路径名与步骤，提供返回 / 重新开始 */
 export function FlowSteps() {
   const stage = useEditorStore((s) => s.stage)
+  const [helpOpen, setHelpOpen] = useState(false)
   const goTo = useEditorStore((s) => s.goTo)
   const restartToWelcome = useEditorStore((s) => s.restartToWelcome)
 
@@ -29,30 +32,36 @@ export function FlowSteps() {
       : ""
 
   return (
-    <div
-      className="flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 py-1.5"
-      {...(isTauriDesktop ? ({ "data-tauri-drag-region": true } as React.HTMLAttributes<HTMLDivElement>) : {})}
-    >
-      <Button variant="ghost" size="sm" onClick={restartToWelcome} title="返回欢迎页（清空当前工作）" aria-label="返回欢迎页">
-        <Home data-icon="inline-start" />
-        重新开始
-      </Button>
-      {backTarget && (
-        <Button variant="outline" size="sm" onClick={() => goTo(backTarget!)} title="返回上一步" aria-label="返回上一步">
-          <ChevronLeft data-icon="inline-start" />
-          返回
+    <>
+      <div
+        className="flex shrink-0 items-center gap-3 border-b bg-sidebar px-3 py-1.5"
+        {...(isTauriDesktop ? ({ "data-tauri-drag-region": true } as React.HTMLAttributes<HTMLDivElement>) : {})}
+      >
+        <Button variant="ghost" size="sm" onClick={restartToWelcome} title="返回欢迎页（清空当前工作）" aria-label="返回欢迎页">
+          <Home data-icon="inline-start" />
+          重新开始
         </Button>
-      )}
-      <span className="text-sm font-medium text-foreground">{title}</span>
-      <span className="text-xs text-muted-foreground">{stepLabel(stage)}</span>
-      {isTauriDesktop && (
-        <div
-          className="drag-spacer flex-1 self-stretch"
-          {...({ "data-tauri-drag-region": true } as React.HTMLAttributes<HTMLDivElement>)}
-        />
-      )}
-      <WindowControls />
-    </div>
+        {backTarget && (
+          <Button variant="outline" size="sm" onClick={() => goTo(backTarget!)} title="返回上一步" aria-label="返回上一步">
+            <ChevronLeft data-icon="inline-start" />
+            返回
+          </Button>
+        )}
+        <span className="text-sm font-medium text-foreground">{title}</span>
+        <span className="text-xs text-muted-foreground">{stepLabel(stage)}</span>
+        {isTauriDesktop && (
+          <div
+            className="drag-spacer flex-1 self-stretch"
+            {...({ "data-tauri-drag-region": true } as React.HTMLAttributes<HTMLDivElement>)}
+          />
+        )}
+        <Button variant="ghost" size="icon" className="size-7" onClick={() => setHelpOpen(true)} aria-label="使用说明" title="使用说明">
+          <CircleQuestionMark className="size-4" />
+        </Button>
+        <WindowControls />
+      </div>
+      <HelpDialog open={helpOpen} onOpenChange={setHelpOpen} />
+    </>
   )
 }
 

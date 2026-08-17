@@ -155,6 +155,20 @@ interface EditorState {
   setModeBSlot: (s: string) => void
   assignModeBCell: (slot: string, key: string) => void
   clearModeBSlots: () => void
+  // 自由放置：开启后图块选择位置不再吸附网格，可拖动到任意像素位置
+  sliceFreePlace: boolean
+  setSliceFreePlace: (v: boolean) => void
+  // 自由放置下各槽位的像素左上角（未设置则回退到网格格点；仅 sliceFreePlace 时生效）
+  modeBSlotFreePos: Record<string, { x: number; y: number } | null>
+  setModeBSlotFreePos: (slot: string, pos: { x: number; y: number } | null) => void
+  assignModeBSlotFree: (slot: string, x: number, y: number) => void
+  // 各槽位裁切「选框」的像素左上角（切图块对齐微调的权威位置）；
+  // 未设置时回退到网格格点 / modeBSlotFreePos。随项目保存/恢复。
+  slotCropPos: Record<string, { x: number; y: number } | null>
+  // 对齐微调：按给定位置（切图固化时的真实裁剪原点）初始化各槽位选框位置
+  setSlotCropPos: (positions: Record<string, { x: number; y: number }>) => void
+  // 对齐微调：把某槽位选框位置沿 (dx,dy) 移动 1px，返回移动后的新位置（供实时重切源图）
+  nudgeSliceSlot: (slot: string, dx: number, dy: number) => { x: number; y: number } | null
 
   // ── 手绘（draw）状态 ───────────────────────────────────────────────
   // 5 块基础像素画布（一等可编辑对象）：参数实时生成 / 切片固化 / 直接手绘 共用出口
@@ -243,6 +257,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       modeBImageSize: null,
       modeBSlots: emptySlotsForType(get().mappingType),
       modeBSlot: slotKeysForType(get().mappingType)[0],
+      modeBSlotFreePos: {},
+      slotCropPos: {},
+      sliceFreePlace: false,
       undoStack: [],
       redoStack: [],
       baseDirty: false,
@@ -267,6 +284,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       gridSizeManual: false,
       modeBSlots: slots,
       modeBSlot: firstSlot,
+      modeBSlotFreePos: {},
+      slotCropPos: {},
     }
     // 基础块槽位键随映射表变化（16↔47），旧基础像素一律失效：
     //  - 参数主导（未脏未锁）的干净基础块：按新映射直接重生成，保持实时联动
@@ -436,7 +455,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   modeBSlots: emptySlotsForType("16"),
   setModeBImage: (dataUrl, size) => {
     const { mappingType, tileSize, gridSizeManual } = get()
-    // 自动推算切片粒度：16块→tileSize，47块→固定32
+    // 自动推算切片粒度：16块→tileSize，47块→固定 32
     const autoGrid =
       mappingType === "16" ? Math.max(1, Math.round(tileSize)) : 32
     // 自动模式（未手动覆盖）下首次导入图片时，按映射表重新推算网格尺寸，
@@ -457,15 +476,73 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setModeBSelectedSlice: (slice) => set({ modeBSelectedSlice: slice }),
   setModeBSlot: (s) => set({ modeBSlot: s }),
   assignModeBCell: (slot, key) => {
+    const gs = Math.max(1, get().modeBGridSize)
+    const [col, row] = key.split(",").map(Number)
     const slots = { ...get().modeBSlots, [slot]: key }
+    // 记录该槽位的选框像素位置（对齐微调的权威位置）
+    const crop = { ...get().slotCropPos, [slot]: { x: col * gs, y: row * gs } }
     // 绑定后自动跳到下一个未选中的槽位（按当前映射表的槽序）
     const next = slotKeysForType(get().mappingType).find((k) => !slots[k])
-    set({ modeBSlots: slots, ...(next ? { modeBSlot: next } : {}) })
+    set({ modeBSlots: slots, slotCropPos: crop, ...(next ? { modeBSlot: next } : {}) })
+  },
+  sliceFreePlace: false,
+  setSliceFreePlace: (v) => set({ sliceFreePlace: v }),
+  modeBSlotFreePos: {},
+  setModeBSlotFreePos: (slot, pos) =>
+    set({ modeBSlotFreePos: { ...get().modeBSlotFreePos, [slot]: pos } }),
+  // 自由放置或网格点选槽位：记录该槽位的选框像素位置（对齐微调的权威位置）
+  slotCropPos: {},
+  setSlotCropPos: (positions) =>
+    set({ slotCropPos: { ...get().slotCropPos, ...positions } }),
+  nudgeSliceSlot: (slot, dx, dy) => {
+    const s = get()
+    const gs = Math.max(1, s.modeBGridSize)
+    // 取该槽位当前选框位置；缺失则回退到自由位置或网格格点
+    let cur = s.slotCropPos[slot]
+    if (cur == null) {
+      const key = s.modeBSlots[slot]
+      if (s.sliceFreePlace && s.modeBSlotFreePos[slot]) cur = s.modeBSlotFreePos[slot]!
+      else if (key) {
+        const [col, row] = key.split(",").map(Number)
+        cur = { x: col * gs, y: row * gs }
+      } else {
+        cur = { x: 0, y: 0 }
+      }
+    }
+    const next = { x: cur.x + dx, y: cur.y + dy }
+    const patch: Partial<EditorState> = {
+      slotCropPos: { ...s.slotCropPos, [slot]: next },
+    }
+    // 自由放置下让切片拾取区选框同步跟随
+    if (s.sliceFreePlace) {
+      patch.modeBSlotFreePos = { ...s.modeBSlotFreePos, [slot]: next }
+    }
+    set(patch)
+    return next
+  },
+  // 自由放置：把槽位区域的左上角设为像素坐标，并写入最近格点以便 canFreeze/导出回退
+  assignModeBSlotFree: (slot, x, y) => {
+    const gs = Math.max(1, get().modeBGridSize)
+    const col = Math.max(0, Math.floor(x / gs))
+    const row = Math.max(0, Math.floor(y / gs))
+    const wasBound = !!get().modeBSlots[slot]
+    const slots = { ...get().modeBSlots, [slot]: `${col},${row}` }
+    const free = { ...get().modeBSlotFreePos, [slot]: { x, y } }
+    const patch: Partial<EditorState> = { modeBSlots: slots, modeBSlotFreePos: free }
+    patch.slotCropPos = { ...get().slotCropPos, [slot]: { x, y } }
+    // 仅新绑定槽位时自动跳到下一个未选中槽位（拖动已绑定槽位不跳）
+    if (!wasBound) {
+      const next = slotKeysForType(get().mappingType).find((k) => !slots[k])
+      if (next) patch.modeBSlot = next
+    }
+    set(patch)
   },
   clearModeBSlots: () =>
     set({
       modeBSlots: emptySlotsForType(get().mappingType),
       modeBSlot: slotKeysForType(get().mappingType)[0],
+      modeBSlotFreePos: {},
+      slotCropPos: {},
     }),
 
   baseCanvases: {},
@@ -597,6 +674,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       modeBImageSize: s.modeBImageSize,
       modeBGridSize: s.modeBGridSize,
       modeBSlots: { ...s.modeBSlots },
+      slotCropPos: { ...s.slotCropPos },
+      sliceFreePlace: s.sliceFreePlace,
+      modeBSlotFreePos: { ...s.modeBSlotFreePos },
       centerView: s.centerView,
       testView: s.testView,
       testFill: Array.from(s.testFill),
@@ -619,6 +699,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     // 恢复时若 mappingType 与当前不同，重置切片槽位
     const slots =
       data.mappingType === s.mappingType ? data.modeBSlots : emptySlotsForType(data.mappingType)
+    // 旧的已存项目可能没有 slotCropPos：为已绑定的槽位补上选框位置（自由坐标或网格格点），
+    // 避免「对齐微调」首移时回退到错误原点产生大偏移
+    const savedCrop = data.slotCropPos ?? {}
+    const gs = Math.max(1, data.modeBGridSize)
+    for (const k of Object.keys(slots)) {
+      if (savedCrop[k]) continue
+      const key = slots[k]
+      if (!key) continue
+      if (data.sliceFreePlace && data.modeBSlotFreePos?.[k]) savedCrop[k] = data.modeBSlotFreePos[k]
+      else {
+        const [col, row] = key.split(",").map(Number)
+        savedCrop[k] = { x: col * gs, y: row * gs }
+      }
+    }
     set({
       stage: { kind: data.sourceMode === "slice" ? "slice.draw" : "procedural.draw" },
       sourceMode: data.sourceMode,
@@ -635,6 +729,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       modeBImageSize: data.modeBImageSize,
       modeBGridSize: data.modeBGridSize,
       modeBSlots: slots,
+      slotCropPos: savedCrop,
+      sliceFreePlace: data.sliceFreePlace,
+      modeBSlotFreePos: data.modeBSlotFreePos,
       centerView: data.centerView,
       testView: data.testView,
       testFill: new Set(data.testFill ?? []),

@@ -33,6 +33,11 @@ export interface ProjectData {
   modeBImageSize: { w: number; h: number } | null
   modeBGridSize: number
   modeBSlots: Record<string, string | null>
+  // 各槽位裁切「选框」的像素位置（对齐微调，回退到网格格点/自由位置）
+  slotCropPos?: Record<string, { x: number; y: number } | null>
+  // 自由放置状态
+  sliceFreePlace: boolean
+  modeBSlotFreePos: Record<string, { x: number; y: number } | null>
   centerView: CanvasView
   testView: MapView
   // 测试地图涂抹的格子集合（稀疏坐标 "x,y"），随项目一并保存/恢复
@@ -63,7 +68,11 @@ export function listSavedProjects(): SavedProjectMeta[] {
 export function readProjectData(id: string): ProjectData | null {
   if (typeof window === "undefined") return null
   const data = safeParse<ProjectData>(window.localStorage.getItem(dataKey(id)))
-  if (data) data.modeBSlots = data.modeBSlots ?? emptySlotsForType(data.mappingType)
+  if (data) {
+    data.modeBSlots = data.modeBSlots ?? emptySlotsForType(data.mappingType)
+    data.modeBSlotFreePos = data.modeBSlotFreePos ?? {}
+    data.sliceFreePlace = data.sliceFreePlace ?? false
+  }
   return data
 }
 

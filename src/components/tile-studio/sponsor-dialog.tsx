@@ -21,9 +21,12 @@ export function SponsorDialog({ open, onOpenChange }: { open: boolean; onOpenCha
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+        <DialogHeader className="flex flex-col items-center text-center">
           <DialogTitle>🎉 支持作者</DialogTitle>
-          <DialogDescription>💖 如果这个工具对你有帮助，欢迎关注作者；有能力请充电，谢谢！</DialogDescription>
+          <DialogDescription className="mx-auto max-w-xs text-center text-sm leading-7">
+            <span className="block">如果有帮助，欢迎关注作者</span>
+            <span className="block">当然，也欢迎小额充电支持一下</span>
+          </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col items-center justify-center gap-3 py-2">
@@ -36,7 +39,11 @@ export function SponsorDialog({ open, onOpenChange }: { open: boolean; onOpenCha
             <ExternalLink data-icon="inline-start" />
             👨‍💻 作者 B 站主页
           </Button>
-          <Button variant="ghost" className="px-6 text-muted-foreground" onClick={() => onOpenChange(false)}>
+          <Button
+            variant="ghost"
+            className="px-6 text-orange-500 hover:bg-orange-500/10 hover:text-orange-600"
+            onClick={() => onOpenChange(false)}
+          >
             关闭
           </Button>
         </div>

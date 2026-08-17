@@ -46,8 +46,32 @@ export function DrawScreen() {
   const { defaultLayout: hVL2, onLayoutChanged: onSVLayoutChanged } = useDefaultLayout({ id: "autotile-draw-left" })
 
   async function handleExportClick() {
-    if (sourceMode === "slice") {
-      // 切图路径：从绑定槽位直接拼合导出（47 恒定 5 槽）
+    // 进入手绘界面后，导出以「当前基础块」为准：固化/手绘/参数生成得到的 baseCanvases
+    // 直接派生导出，保证与左下角总览一致，也避免重开项目时依赖可能未恢复的切片原图/槽位。
+    if (hasBase) {
+      // 参数 / 手绘 / 固化：从 baseCanvases 实时派生（含单格微调）
+      const tiles = applyOverrides(deriveTilesFromBase(baseCanvases, mappingType, tileSize), overrides)
+      if (tiles.size === 0) {
+        toast.error("尚无基础像素，请在中间画布绘制")
+        return
+      }
+      const firstTile = tiles.get(15) ?? tiles.values().next().value!
+      const thumb = firstTile.toDataURL("image/png")
+      const asset: LibraryAsset = {
+        id: `work-${Date.now()}`,
+        name: "当前图块",
+        kind: "autotile",
+        mappingType,
+        // 47 模式瓦片尺寸由素材实际尺寸决定（参数=tileSize / 固化=gridSize），导出按实际尺寸排版
+        tileSize: firstTile.width || tileSize,
+        params: { ...genParams },
+        tiles,
+        thumbnail: thumb,
+        createdAt: Date.now(),
+      }
+      setExportTarget(asset)
+    } else if (sourceMode === "slice") {
+      // 切图路径但尚无固化基础块：从绑定槽位直接拼合导出（47 恒定 5 槽）
       const s = useEditorStore.getState()
       const slotKeys = s.mappingType === "16" ? DUAL16_SLOT_KEYS : BLOB5_SLOT_KEYS
       if (!s.modeBImage) {
@@ -83,26 +107,6 @@ export function DrawScreen() {
         toast.error("拼合失败", { description: err instanceof Error ? err.message : "未知错误" })
         return
       }
-    } else if (hasBase) {
-      // 参数 / 手绘：从 baseCanvases 实时派生（含单格微调）
-      const tiles = applyOverrides(deriveTilesFromBase(baseCanvases, mappingType, tileSize), overrides)
-      if (tiles.size === 0) {
-        toast.error("尚无基础像素，请在中间画布绘制")
-        return
-      }
-      const thumb = (tiles.get(15) ?? tiles.values().next().value!).toDataURL("image/png")
-      const asset: LibraryAsset = {
-        id: `work-${Date.now()}`,
-        name: "当前图块",
-        kind: "autotile",
-        mappingType,
-        tileSize,
-        params: { ...genParams },
-        tiles,
-        thumbnail: thumb,
-        createdAt: Date.now(),
-      }
-      setExportTarget(asset)
     } else {
       setExportTarget(generateTileAsset("程序生成纹理", mappingType, tileSize, genParams))
     }

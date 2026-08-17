@@ -1,6 +1,6 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { useEditorStore } from "@/lib/store"
 import {
   DUAL16_COLORS,
@@ -22,9 +22,13 @@ export function SlicePickerInline() {
   const slot = useEditorStore((s) => s.modeBSlot)
   const slots = useEditorStore((s) => s.modeBSlots)
   const assignCell = useEditorStore((s) => s.assignModeBCell)
+  const assignModeBSlotFree = useEditorStore((s) => s.assignModeBSlotFree)
   const setImage = useEditorStore((s) => s.setModeBImage)
   const setSlot = useEditorStore((s) => s.setModeBSlot)
   const mappingType = useEditorStore((s) => s.mappingType)
+  const sliceFreePlace = useEditorStore((s) => s.sliceFreePlace)
+  const modeBSlotFreePos = useEditorStore((s) => s.modeBSlotFreePos)
+  const slotCropPos = useEditorStore((s) => s.slotCropPos)
 
   const isDual16 = mappingType === "16"
   const slotKeys: string[] = isDual16 ? DUAL16_SLOT_KEYS : BLOB5_SLOT_KEYS
@@ -39,6 +43,9 @@ export function SlicePickerInline() {
   const stageRef = useRef<HTMLDivElement>(null)
   // 拖拽图片悬停高亮
   const [dragActive, setDragActive] = useState(false)
+  // 自由放置拖动：ref 存拖动中的槽位与坐标，state 驱动实时重绘
+  const freeDragRef = useRef<{ slot: string; x: number; y: number } | null>(null)
+  const [liveFreePos, setLiveFreePos] = useState<{ slot: string; x: number; y: number } | null>(null)
 
   // 全局拦截 dragover/drop，防止 WebView 在拖放图片时默认导航走掉（拖入无效的常见根因）
   useEffect(() => {
@@ -71,64 +78,107 @@ export function SlicePickerInline() {
     reader.readAsDataURL(file)
   }
 
-  // 反向映射：源图格子 -> 已绑定槽位（O(1) 查找）
-  const slotOfKey = useMemo(() => {
-    const m = new Map<string, string>()
-    for (const k of slotKeys) {
-      const key = slots[k]
-      if (key) m.set(key, k)
-    }
-    return m
-  }, [slots, slotKeys])
-
   const cols = imageSize ? Math.floor(imageSize.w / gridSize) : 0
   const rows = imageSize ? Math.floor(imageSize.h / gridSize) : 0
   const baseW = cols * gridSize
   const baseH = rows * gridSize
+  // 世界坐标 = 图片四周各留一圈「网格大小」的空旷边距，自由放置时图块可拖到
+  // 图片外部（避免过渡边界被切掉），贴齐网格模式仍在图片内吸附。
+  const M = gridSize
+  const worldW = baseW + 2 * M
+  const worldH = baseH + 2 * M
+
+  /** 槽位区域的左上角像素坐标：优先用对齐微调后的选框位置，否则自由坐标/网格格点 */
+  function slotPixelPos(k: string): { x: number; y: number } | null {
+    if (slotCropPos[k]) return slotCropPos[k]!
+    const key = slots[k]
+    if (!key) return null
+    if (sliceFreePlace && modeBSlotFreePos[k]) return modeBSlotFreePos[k]!
+    const [col, row] = key.split(",").map(Number)
+    return { x: col * gridSize, y: row * gridSize }
+  }
+
+  /** 事件坐标 → 图像像素坐标（canvas 被整体 transform 缩放，按 rect 反算；允许越界返回负值/超出值） */
+  function pixelFromEvent(e: { clientX: number; clientY: number }) {
+    const canvas = overlayRef.current
+    if (!canvas || !imageSize) return null
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width <= 0 || rect.height <= 0) return null
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * worldW - M,
+      y: ((e.clientY - rect.top) / rect.height) * worldH - M,
+    }
+  }
+
+  /** 命中检查：像素点落在哪个已绑定槽位的区域内 */
+  function slotAtPixel(px: number, py: number): string | null {
+    for (const k of slotKeys) {
+      const p = slotPixelPos(k)
+      if (p && px >= p.x && px < p.x + gridSize && py >= p.y && py < p.y + gridSize) return k
+    }
+    return null
+  }
+
+  /** 自由放置钳制：图块可拖到图片外部一圈（世界边距 M），不许越过世界范围 */
+  function clampFreeImage(x: number, y: number) {
+    return {
+      x: Math.max(-M, Math.min(baseW - gridSize + M, x)),
+      y: Math.max(-M, Math.min(baseH - gridSize + M, y)),
+    }
+  }
 
   // 网格覆盖层用单个 canvas 绘制，替代数千个 button DOM
   const drawOverlay = useCallback(() => {
     const canvas = overlayRef.current
     if (!canvas || !imageSize) return
     const dpr = window.devicePixelRatio || 1
-    canvas.width = baseW * dpr
-    canvas.height = baseH * dpr
-    canvas.style.width = `${baseW}px`
-    canvas.style.height = `${baseH}px`
+    canvas.width = worldW * dpr
+    canvas.height = worldH * dpr
+    canvas.style.width = `${worldW}px`
+    canvas.style.height = `${worldH}px`
     const ctx = canvas.getContext("2d", { willReadFrequently: true })
     if (!ctx) return
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    ctx.clearRect(0, 0, baseW, baseH)
+    ctx.clearRect(0, 0, worldW, worldH)
+
+    const drawSlotRect = (wx: number, wy: number, k: string, active: boolean) => {
+      ctx.fillStyle = slotColors[k]
+      ctx.fillRect(wx, wy, gridSize, gridSize)
+      if (active) {
+        ctx.strokeStyle = "rgba(255,255,255,0.95)"
+        ctx.lineWidth = 2
+        ctx.strokeRect(wx + 1, wy + 1, gridSize - 2, gridSize - 2)
+      } else {
+        ctx.strokeStyle = "rgba(255,255,255,0.4)"
+        ctx.lineWidth = 1
+        ctx.strokeRect(wx + 0.5, wy + 0.5, gridSize - 1, gridSize - 1)
+      }
+    }
+
+    // 网格线 + 悬停高亮（shift 到图片世界偏移 M）
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        const key = `${x},${y}`
-        const px = x * gridSize
-        const py = y * gridSize
-        const bound = slotOfKey.get(key)
-        if (bound) {
-          ctx.fillStyle = slotColors[bound]
-          ctx.fillRect(px, py, gridSize, gridSize)
-          if (bound === slot) {
-            ctx.strokeStyle = "rgba(255,255,255,0.95)"
-            ctx.lineWidth = 2
-            ctx.strokeRect(px + 1, py + 1, gridSize - 2, gridSize - 2)
-          } else {
-            ctx.strokeStyle = "rgba(255,255,255,0.4)"
-            ctx.lineWidth = 1
-            ctx.strokeRect(px + 0.5, py + 0.5, gridSize - 1, gridSize - 1)
-          }
-        } else {
-          ctx.strokeStyle = "rgba(255,255,255,0.1)"
-          ctx.lineWidth = 1
-          ctx.strokeRect(px + 0.5, py + 0.5, gridSize - 1, gridSize - 1)
-        }
+        const px = M + x * gridSize
+        const py = M + y * gridSize
+        ctx.strokeStyle = "rgba(255,255,255,0.08)"
+        ctx.lineWidth = 1
+        ctx.strokeRect(px + 0.5, py + 0.5, gridSize - 1, gridSize - 1)
         if (hoverCell && hoverCell.x === x && hoverCell.y === y) {
           ctx.fillStyle = "rgba(255,255,255,0.1)"
           ctx.fillRect(px, py, gridSize, gridSize)
         }
       }
     }
-  }, [slotOfKey, gridSize, slot, hoverCell, imageSize, cols, rows, baseW, baseH, slotColors])
+    // 已绑定槽位（自由放置用自由坐标，否则贴齐网格）
+    for (const k of slotKeys) {
+      const p = slotPixelPos(k)
+      if (p) drawSlotRect(M + p.x, M + p.y, k, k === slot)
+    }
+    // 自由放置拖动中的实时位置
+    if (liveFreePos) {
+      drawSlotRect(M + liveFreePos.x, M + liveFreePos.y, liveFreePos.slot, true)
+    }
+  }, [gridSize, M, worldW, worldH, slot, hoverCell, imageSize, cols, rows, slotColors, slotKeys, slots, sliceFreePlace, modeBSlotFreePos, liveFreePos])
 
   useEffect(() => {
     drawOverlay()
@@ -166,8 +216,10 @@ export function SlicePickerInline() {
     if (!canvas || !imageSize) return null
     const rect = canvas.getBoundingClientRect()
     if (rect.width <= 0 || rect.height <= 0) return null
-    const cx = Math.floor(((e.clientX - rect.left) / rect.width) * cols)
-    const cy = Math.floor(((e.clientY - rect.top) / rect.height) * rows)
+    const ipx = ((e.clientX - rect.left) / rect.width) * worldW - M
+    const ipy = ((e.clientY - rect.top) / rect.height) * worldH - M
+    const cx = Math.floor(ipx / gridSize)
+    const cy = Math.floor(ipy / gridSize)
     if (cx < 0 || cy < 0 || cx >= cols || cy >= rows) return null
     return { x: cx, y: cy }
   }
@@ -239,8 +291,8 @@ export function SlicePickerInline() {
           <div
             className="absolute left-1/2 top-1/2"
             style={{
-              width: baseW,
-              height: baseH,
+              width: worldW,
+              height: worldH,
               transform: `translate(calc(-50% + ${pan.x}px), calc(-50% + ${pan.y}px)) scale(${zoom})`,
               transformOrigin: "center center",
               imageRendering: "pixelated",
@@ -250,8 +302,8 @@ export function SlicePickerInline() {
             <img
               src={image}
               alt="导入的纹理图片"
-              className="absolute inset-0 h-full w-full"
-              style={{ imageRendering: "pixelated" }}
+              className="absolute"
+              style={{ left: M, top: M, width: baseW, height: baseH, imageRendering: "pixelated" }}
               draggable={false}
             />
             <canvas
@@ -261,11 +313,33 @@ export function SlicePickerInline() {
               style={{ imageRendering: "pixelated" }}
               onPointerDown={(e) => {
                 if (e.shiftKey || e.button === 1) return
-                const c = cellFromEvent(e)
-                if (c) assignCell(slot, `${c.x},${c.y}`)
+                if (sliceFreePlace) {
+                  const p = pixelFromEvent(e)
+                  if (!p) return
+                  // 命中已绑定槽位则改拖它；否则放置当前选中槽位
+                  const hit = slotAtPixel(p.x, p.y)
+                  const target = hit ?? slot
+                  if (hit) setSlot(hit)
+                  const { x, y } = clampFreeImage(p.x, p.y)
+                  freeDragRef.current = { slot: target, x, y }
+                  setLiveFreePos({ slot: target, x, y })
+                  e.currentTarget.setPointerCapture(e.pointerId)
+                } else {
+                  const c = cellFromEvent(e)
+                  if (c) assignCell(slot, `${c.x},${c.y}`)
+                }
               }}
               onPointerMove={(e) => {
                 if (panning.current) return
+                if (freeDragRef.current) {
+                  const p = pixelFromEvent(e)
+                  if (p) {
+                    const { x, y } = clampFreeImage(p.x, p.y)
+                    freeDragRef.current = { ...freeDragRef.current, x, y }
+                    setLiveFreePos({ slot: freeDragRef.current.slot, x, y })
+                  }
+                  return
+                }
                 const c = cellFromEvent(e)
                 setHoverCell((prev) => {
                   if (!c) return null
@@ -273,7 +347,20 @@ export function SlicePickerInline() {
                   return c
                 })
               }}
-              onPointerLeave={() => setHoverCell(null)}
+              onPointerUp={(e) => {
+                if (freeDragRef.current) {
+                  const d = freeDragRef.current
+                  freeDragRef.current = null
+                  setLiveFreePos(null)
+                  assignModeBSlotFree(d.slot, d.x, d.y)
+                  if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+                }
+              }}
+              onPointerLeave={() => {
+                setHoverCell(null)
+                freeDragRef.current = null
+                setLiveFreePos(null)
+              }}
             />
           </div>
         )}

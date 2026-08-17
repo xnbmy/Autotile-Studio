@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useEditorStore } from "@/lib/store"
 import type { DrawTool } from "@/lib/types"
+import { cropSliceSlot, loadSliceSource, nudgeSourceDelta } from "@/lib/slice-freeze"
+import { toast } from "sonner"
 import { ZoomIn, ZoomOut, Maximize2 } from "lucide-react"
 
 /* ─────────────────────────────────────────────────────────────
@@ -70,6 +72,8 @@ export default function ModeCCanvas() {
   const brushSize = useEditorStore((s) => s.brushSize)
   const setBaseCanvases = useEditorStore((s) => s.setBaseCanvases)
   const setBaseDirty = useEditorStore((s) => s.setBaseDirty)
+  const nudgeSliceSlot = useEditorStore((s) => s.nudgeSliceSlot)
+  const sourceMode = useEditorStore((s) => s.sourceMode)
   const pushUndo = useEditorStore((s) => s.pushUndo)
   const undo = useEditorStore((s) => s.undo)
   const redo = useEditorStore((s) => s.redo)
@@ -98,6 +102,43 @@ export default function ModeCCanvas() {
 
   const slotList = mappingType === "16" ? SLOT16 : SLOT47
 
+  // ── 切图对齐微调：开关 + 选中的基础块（仅切图路径生效）─────────
+  const [alignMode, setAlignMode] = useState(false)
+  const [alignSlot, setAlignSlot] = useState<string | null>(null)
+  const alignModeRef = useRef(false)
+  alignModeRef.current = alignMode
+  const alignSlotRef = useRef<string | null>(null)
+  alignSlotRef.current = alignSlot
+
+  /** 对齐微调：移动「固化前切片选框」的位置，并实时从源图按新选框重切该基础块 */
+  const nudgeSelected = useCallback(
+    async (dx: number, dy: number) => {
+      const k = alignSlotRef.current
+      if (!alignModeRef.current || !k) return
+      const s = useEditorStore.getState()
+      if (!s.modeBImage) {
+        toast.info("请先在切图页导入图片再微调选框")
+        return
+      }
+      // 先入栈（记录当前像素），再移动选框并实时重切，便于撤销
+      pushUndo()
+      // 角块在固化时被旋转 ±90°，把按键方向换算到源图选框的位移（叠加旋转偏移）
+      const S = nudgeSourceDelta(s.mappingType, k, dx, dy)
+      const next = s.nudgeSliceSlot(k, S.x, S.y)
+      if (!next) return
+      try {
+        const src = await loadSliceSource(s.modeBImage)
+        const gs = Math.max(1, s.modeBGridSize)
+        const cv = cropSliceSlot(src, next, gs, s.mappingType, k)
+        setBaseCanvases({ ...baseCanvasesRef.current, [k]: cv })
+        setBaseDirty(true)
+      } catch (err) {
+        toast.error("重切失败", { description: err instanceof Error ? err.message : "未知错误" })
+      }
+    },
+    [pushUndo, setBaseCanvases, setBaseDirty, nudgeSliceSlot],
+  )
+
   const blocks = useMemo<Block[]>(() => {
     const canvases: { key: string; label: string; canvas: HTMLCanvasElement }[] = []
     for (const s of slotList) {
@@ -105,6 +146,12 @@ export default function ModeCCanvas() {
       if (canvas) canvases.push({ key: s.key, label: s.label, canvas })
     }
     if (canvases.length === 0) return []
+    // 47 模式：把第一块（外角）复制一份作为第 6 块填充右下角空位，并与其共用同一
+    // 画布（编辑任一块都会同步），用于排版铺开后检查各相邻块的边界是否对齐。
+    if (mappingType !== "16" && canvases.length >= 5) {
+      const first = canvases[0]
+      canvases.push({ key: `${first.key}-copy`, label: `${first.label}·辅`, canvas: first.canvas })
+    }
     const maxW = Math.max(...canvases.map((b) => b.canvas.width))
     const maxH = Math.max(...canvases.map((b) => b.canvas.height))
     // 九宫格布局：图块间距 = 两倍图块大小，四周留白 = 图块大小。
@@ -116,7 +163,7 @@ export default function ModeCCanvas() {
       ox: pad + (i % 3) * (maxW + gap),
       oy: pad + Math.floor(i / 3) * (maxH + gap),
     }))
-  }, [baseCanvases, slotList, tileSize])
+  }, [baseCanvases, slotList, tileSize, mappingType])
 
   // 镜像 ref，供事件处理器读取最新值
   const viewRef = useRef(view)
@@ -232,6 +279,18 @@ export default function ModeCCanvas() {
       ctx.lineWidth = 1
       ctx.strokeRect(sx - 0.5, sy - 0.5, sw + 1, sh + 1)
 
+      // 切图对齐微调：高亮当前选中的基础块
+      if (alignMode) {
+        const baseKey = b.key.endsWith("-copy") ? b.key.slice(0, -"-copy".length) : b.key
+        if (alignSlot === baseKey) {
+          ctx.fillStyle = "rgba(251,191,36,0.18)"
+          ctx.fillRect(sx, sy, sw, sh)
+          ctx.strokeStyle = "rgba(251,191,36,1)"
+          ctx.lineWidth = 2
+          ctx.strokeRect(sx, sy, sw, sh)
+        }
+      }
+
       if (drawShowGrid) {
         ctx.strokeStyle = "rgba(100,116,139,0.30)"
         ctx.lineWidth = 1
@@ -257,7 +316,7 @@ export default function ModeCCanvas() {
     }
 
     // （光标由下方独立 overlay 画布绘制，见 drawOverlayCursor，无需在此绘制）
-  }, [baseCanvases, view, size, drawTileTransparent, drawTileColorDiff, drawShowGrid])
+  }, [baseCanvases, view, size, drawTileTransparent, drawTileColorDiff, drawShowGrid, alignMode, alignSlot])
 
   // ── 像素吸附光标：画在独立 overlay 画布上（不随主画布重绘被抹掉）──
   // 大小 = 笔刷大小 × 像素格缩放（zoom），严格对齐像素格。
@@ -360,6 +419,29 @@ export default function ModeCCanvas() {
         pickColorSlot(k === "0" ? 9 : Number(k) - 1)
         return
       }
+      // 切图对齐微调：选中一块后，上下左右键把它整体位移 1px（环形无缝）
+      if (alignModeRef.current && alignSlotRef.current) {
+        if (k === "ArrowUp") {
+          e.preventDefault()
+          nudgeSelected(0, -1)
+          return
+        }
+        if (k === "ArrowDown") {
+          e.preventDefault()
+          nudgeSelected(0, 1)
+          return
+        }
+        if (k === "ArrowLeft") {
+          e.preventDefault()
+          nudgeSelected(-1, 0)
+          return
+        }
+        if (k === "ArrowRight") {
+          e.preventDefault()
+          nudgeSelected(1, 0)
+          return
+        }
+      }
       if (!(e.ctrlKey || e.metaKey)) return
       if (k.toLowerCase() === "z" && e.shiftKey) {
         e.preventDefault()
@@ -374,7 +456,7 @@ export default function ModeCCanvas() {
     }
     window.addEventListener("keydown", onKey)
     return () => window.removeEventListener("keydown", onKey)
-  }, [undo, redo, pickColorSlot])
+  }, [undo, redo, pickColorSlot, nudgeSelected])
 
   const screenToWorld = (e: React.PointerEvent) => {
     const cv = canvasRef.current!
@@ -557,6 +639,12 @@ export default function ModeCCanvas() {
     const { wx, wy } = screenToWorld(e)
     const b = blockAt(wx, wy)
     if (!b) return
+    // 切图对齐微调开启：点击选中基础块（副本块归一到其基础块键），不进入绘制
+    if (alignModeRef.current) {
+      const key = b.key.endsWith("-copy") ? b.key.slice(0, -"-copy".length) : b.key
+      setAlignSlot(key)
+      return
+    }
     const { px, py } = pixelAt(b, wx, wy)
     const tool = toolRef.current
 
@@ -668,7 +756,36 @@ export default function ModeCCanvas() {
   return (
     <div className="flex h-full flex-col">
       {/* 缩放工具条（纯图标，无文字干扰） */}
-      <div className="flex shrink-0 items-center justify-end gap-1 border-b border-zinc-800 px-3 py-1.5">
+      <div className="flex shrink-0 items-center justify-between gap-1 border-b border-zinc-800 px-3 py-1.5">
+        {/* 切图对齐微调（仅切片来源） */}
+        {sourceMode === "slice" && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (alignMode) setAlignSlot(null)
+                setAlignMode(!alignMode)
+              }}
+              title="对齐微调：开启后点击选择一块基础块，用方向键移动它在切片页里的裁切选框位置，并实时从源图重切这块像素对齐边界"
+              className={[
+                "rounded px-2 py-0.5 text-xs transition-colors",
+                alignMode
+                  ? "bg-amber-500 text-amber-950"
+                  : "border border-zinc-700 text-zinc-300 hover:bg-zinc-800",
+              ].join(" ")}
+            >
+              对齐微调
+            </button>
+            {alignMode && (
+              <span className="text-xs text-amber-300">
+                {alignSlot
+                  ? `已选：${slotList.find((s) => s.key === alignSlot)?.label ?? alignSlot}（↑↓←→ 移动切片选框 · 实时重切）`
+                  : "点击选择一块基础块，再按方向键移动它在切片页的裁切选框"}
+              </span>
+            )}
+          </div>
+        )}
+        <div className="flex items-center gap-1">
         <button
           type="button"
           onClick={() => setView((v) => ({ ...v, zoom: Math.max(0.25, v.zoom / 1.25) }))}
@@ -694,6 +811,7 @@ export default function ModeCCanvas() {
         >
           <Maximize2 className="size-4" />
         </button>
+        </div>
       </div>
 
       {/* 画布区 */}

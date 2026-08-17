@@ -4,6 +4,7 @@ import {
   type NeighborBits,
 } from "./tile-mapping"
 import type { BaseCanvases, MappingType, ModeBTemplateResult, Overrides, SlotKey } from "./types"
+import BLOB47_RECIPES_JSON from "./blob47-recipes.json"
 
 // 可选的输出瓦片尺寸（手动模式）
 export const TILE_SIZES = [8, 16, 24, 32, 48, 64]
@@ -73,49 +74,247 @@ export const BLOB5_GRID_POS: Record<Blob5SlotKey, readonly (readonly [number, nu
   empty: [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1], [0, 2], [1, 2], [2, 2]],
 }
 
-/**
- * 把完整模式的 13 槽键映射为「简化模式基础块 + 变换」。
- * 基础块美术（见 asset-factory.generateBaseCanvases，含旋转）：
- *  - outer = 草在左下角（原右下角顺时针 90°）
- *  - inner = 凹口在右上角（原右下角逆时针 90°）
- *  - edge  = 下边界（草在下方）
- * 各槽位按象限位置翻转/旋转，使形状朝向正确方向。
- */
-export const BLOB5_XF: Record<
-  SlotKey,
-  { base: Blob5SlotKey; flipH: boolean; flipV: boolean; rot: number }
-> = {
-  // outer 草在左下角 → 旋转到目标角（草体保持在象限的「中心侧」角）
-  TL_OUTER: { base: "outer", flipH: false, flipV: false, rot: 270 }, // 草在 TL 象限右下（中心）
-  TR_OUTER: { base: "outer", flipH: false, flipV: false, rot: 0 },   // 草在 TR 象限左下（中心）
-  BL_OUTER: { base: "outer", flipH: false, flipV: false, rot: 180 }, // 草在 BL 象限右上（中心）
-  BR_OUTER: { base: "outer", flipH: false, flipV: false, rot: 90 },  // 草在 BR 象限左上（中心）
-  // inner 凹口在右上角 → 旋转到目标凹口（指向瓦片外角）
-  TL_INNER: { base: "inner", flipH: false, flipV: false, rot: 90 },  // 凹口在 BR（右下）
-  TR_INNER: { base: "inner", flipH: false, flipV: false, rot: 180 }, // 凹口在 BL（左下）
-  BL_INNER: { base: "inner", flipH: false, flipV: false, rot: 0 },   // 凹口在 TR（右上）
-  BR_INNER: { base: "inner", flipH: false, flipV: false, rot: 270 }, // 凹口在 TL（左上）
-  TOP_EDGE: { base: "edge", flipH: false, flipV: false, rot: 0 },
-  BOTTOM_EDGE: { base: "edge", flipH: false, flipV: true, rot: 0 },
-  LEFT_EDGE: { base: "edge", flipH: false, flipV: false, rot: 270 },
-  RIGHT_EDGE: { base: "edge", flipH: false, flipV: false, rot: 90 },
-  CENTER_SOLID: { base: "solid", flipH: false, flipV: false, rot: 0 },
-  EMPTY_DIRT: { base: "empty", flipH: false, flipV: false, rot: 0 },
+// ───────────────────────────────────────────────────────────────────────────
+// Blob47 拼合算法（用户定义的「1/4 步进偏移拼合」，全程 1:1 无缩放）。
+//
+// 素材基准（手绘界面固化后的朝向，2×2 量化 TL/TR/BL/BR，1=草 0=背景）：
+//   outer = 0010（草左下）  solid = 1111（全草）  empty = 0000（全背景）
+//   inner = 1011（凹口右上） edge = 0011（草下半）
+// 该朝向让 5 块素材按「上 3 下 2」排版时边界互相衔接（外角下边 ↔ 内角上边、
+// 内角右边 ↔ 边界左边），手绘时直观（slice-freeze 固化的 ±90° 补偿即为此）。
+//
+// 每个输出瓦片 = 4 个象限素材整块偏移绘制（输出尺寸 = 素材尺寸 g，步进 q = g/4）：
+//   TL 素材贴 (-q,-q)、TR 贴 (g-q,-q)、BL 贴 (-q,g-q)、BR 贴 (g-q,g-q)，
+//   四块在 32×32 窗口内恰好无缝覆盖（[0,3q]² / [3q,g]×[0,3q] / …）。
+// 例：mask 28（第一格）= outer 逆 90° + edge 0° + edge 逆 90° + solid → 0000/0111/0111/0111。
+// ───────────────────────────────────────────────────────────────────────────
+
+// ───────────────────────────────────────────────────────────────────────────
+// Blob47 拼合算法 v2（瓦片级对称派生）。
+//
+// 关键思路（用户要求）：不能为每个 mask 独立用素材拼——那会让 112 等格子的
+// 边界变成素材接缝的「整齐直线」。正确做法是先把 47 个 mask 按 8 邻域旋转/
+// 镜像（D4 群）归约为 14 个规范形，每个规范形用 1/4 偏移拼合一次，其余瓦片
+// 由规范形瓦片整体旋转/镜像派生（112=rot90(28)、241=rot90(124) 等），
+// 这样边界噪声随旋转一致，对称性自动成立。
+//
+// 素材基准（与手绘/固化一致，2×2 量化）：outer=0010 草左下、solid=1111、
+// empty=0000、inner=1011 凹口右上、edge=0011 草下半。
+// 组合表经块级穷举搜索验证：12 个规范形精确匹配标准 blob 形状，仅规范形
+// 1（单上边）与 5（上+右下）各差 1~2 像素（5 素材的粒度上限）。
+// ───────────────────────────────────────────────────────────────────────────
+
+/** 单个 Reference Fragment 的定义（坐标基准：16×16 母材 / 48×48 虚拟画布） */
+interface Blob47FragmentSpec {
+  base: number
+  source: { x: number; y: number; w: number; h: number }
+  dest: { x: number; y: number }
+  rotation: number
+  flipX: boolean
+  flipY: boolean
+}
+/** 单个瓦片拼合配方（来自数据.json / 参考.html） */
+interface Blob47RecipeSpec {
+  id: number
+  mask: number
+  crop: { x: number; y: number }
+  fragments: Blob47FragmentSpec[]
+}
+/** 参考算法 5 个母材索引 → 项目槽位键。0=外角 1=全草 2=全土 3=内角 4=直边 */
+const RECIPE_BASE_SLOT: Blob5SlotKey[] = ["outer", "solid", "empty", "inner", "edge"]
+
+const BLOB47_RECIPES = (BLOB47_RECIPES_JSON as { recipes: Record<string, Blob47RecipeSpec> }).recipes
+
+/** 水平镜像（左右翻转），返回新画布 */
+function flipCanvasX(src: HTMLCanvasElement): HTMLCanvasElement {
+  const out = document.createElement("canvas")
+  out.width = src.width
+  out.height = src.height
+  const ctx = out.getContext("2d", { willReadFrequently: true })
+  if (ctx) {
+    ctx.imageSmoothingEnabled = false
+    ctx.translate(src.width, 0)
+    ctx.scale(-1, 1)
+    ctx.drawImage(src, 0, 0)
+  }
+  return out
+}
+/** 垂直镜像（上下翻转），返回新画布 */
+function flipCanvasY(src: HTMLCanvasElement): HTMLCanvasElement {
+  const out = document.createElement("canvas")
+  out.width = src.width
+  out.height = src.height
+  const ctx = out.getContext("2d", { willReadFrequently: true })
+  if (ctx) {
+    ctx.imageSmoothingEnabled = false
+    ctx.translate(0, src.height)
+    ctx.scale(1, -1)
+    ctx.drawImage(src, 0, 0)
+  }
+  return out
 }
 
-// 切图模式（Mode B）47 拼合的角槽方位修正（参考图对照）：
-//  - 简化 5 块模式：外角补偿 +90°（顺时针）、内角补偿 -90°（逆时针）——已验证正确
-//  - 完整 13 块模式：不补偿（0°）
-// 只在切图模式（generateQuadrantStitch）生效，不影响模式 A（deriveTilesFromBase）。
-export const B47_SLOT_ROT_SIMPLE: Partial<Record<SlotKey, number>> = {
-  TL_OUTER: 90,
-  TR_OUTER: 90,
-  BL_OUTER: 90,
-  BR_OUTER: 90,
-  TL_INNER: -90,
-  TR_INNER: -90,
-  BL_INNER: -90,
-  BR_INNER: -90,
+/**
+ * 把项目标准朝向的基础块（outer=0010、inner=1011）换算成参考算法母材朝向
+ * （外角=0001 草右下、内角=1110 缺右下）：外角水平镜像、内角垂直镜像。
+ */
+function toReferenceBase(k: Blob5SlotKey, src: HTMLCanvasElement): HTMLCanvasElement {
+  if (k === "outer") return flipCanvasX(src)
+  if (k === "inner") return flipCanvasY(src)
+  return src
+}
+
+/** 复用临时画布，避免为每个 fragment 都新建 allocation */
+let recipeTempCanvas: HTMLCanvasElement | null = null
+function getRecipeTemp(w: number, h: number): CanvasRenderingContext2D | null {
+  if (!recipeTempCanvas) recipeTempCanvas = document.createElement("canvas")
+  if (recipeTempCanvas.width !== w || recipeTempCanvas.height !== h) {
+    recipeTempCanvas.width = w
+    recipeTempCanvas.height = h
+  }
+  const ctx = recipeTempCanvas.getContext("2d", { willReadFrequently: true })
+  if (ctx) ctx.imageSmoothingEnabled = false
+  return ctx
+}
+
+/** 按配方在 3S×3S 虚拟画布拼块并从 crop 偏移截取 S×S 瓦片（全程 1:1 无缩放） */
+function renderRecipeTile(
+  recipe: Blob47RecipeSpec,
+  refBases: Record<number, HTMLCanvasElement>,
+  scale: number,
+  outSize: number,
+): HTMLCanvasElement | null {
+  const vcSize = Math.round(48 * scale)
+  const vc = document.createElement("canvas")
+  vc.width = vcSize
+  vc.height = vcSize
+  const ctx = vc.getContext("2d", { willReadFrequently: true })
+  if (!ctx) return null
+  ctx.imageSmoothingEnabled = false
+  ctx.clearRect(0, 0, vcSize, vcSize)
+
+  for (const frag of recipe.fragments) {
+    const base = refBases[frag.base]
+    if (!base) continue
+    const sx = frag.source.x * scale
+    const sy = frag.source.y * scale
+    const sw = frag.source.w * scale
+    const sh = frag.source.h * scale
+    const dx = frag.dest.x * scale
+    const dy = frag.dest.y * scale
+    const tw = Math.max(1, Math.round(sw))
+    const th = Math.max(1, Math.round(sh))
+    const tctx = getRecipeTemp(tw, th)
+    if (!tctx) continue
+    tctx.clearRect(0, 0, tw, th)
+    tctx.drawImage(base, sx, sy, sw, sh, 0, 0, tw, th)
+
+    let w = tw
+    let h = th
+    if (frag.rotation % 180 !== 0) {
+      w = th
+      h = tw
+    }
+    ctx.save()
+    ctx.translate(dx + w / 2, dy + h / 2)
+    if (frag.rotation) ctx.rotate((frag.rotation * Math.PI) / 180)
+    ctx.scale(frag.flipX ? -1 : 1, frag.flipY ? -1 : 1)
+    ctx.drawImage(recipeTempCanvas as HTMLCanvasElement, -tw / 2, -th / 2, tw, th)
+    ctx.restore()
+  }
+
+  const out = document.createElement("canvas")
+  out.width = outSize
+  out.height = outSize
+  const octx = out.getContext("2d", { willReadFrequently: true })
+  if (!octx) return null
+  octx.imageSmoothingEnabled = false
+  octx.drawImage(vc, recipe.crop.x * scale, recipe.crop.y * scale, outSize, outSize, 0, 0, outSize, outSize)
+  return out
+}
+
+/** 从 empty 素材采样泥土背景色；无有效色则回退默认泥土色 #8a6642 */
+function sampleDirtColor(srcs: Partial<Record<Blob5SlotKey, HTMLCanvasElement>>): [number, number, number] {
+  const e = srcs.empty
+  if (e) {
+    const ctx = e.getContext("2d", { willReadFrequently: true })
+    if (ctx) {
+      const probe = (x: number, y: number): [number, number, number] | null => {
+        try {
+          const d = ctx.getImageData(x, y, 1, 1).data
+          return d[3] > 0 ? [d[0], d[1], d[2]] : null
+        } catch {
+          return null
+        }
+      }
+      const midX = Math.floor(e.width / 2)
+      const midY = Math.floor(e.height / 2)
+      const p = probe(midX, midY) ?? probe(0, 0) ?? probe(e.width - 1, e.height - 1)
+      if (p) return p
+    }
+  }
+  return [138, 102, 66]
+}
+
+/** 若 empty 素材含透明像素（参数路径生成的纯背景），复制并填成泥土背景色保证不透明 */
+function makeEmptyOpaque(src: HTMLCanvasElement, dirt: [number, number, number]): HTMLCanvasElement {
+  const copy = document.createElement("canvas")
+  copy.width = src.width
+  copy.height = src.height
+  const ctx = copy.getContext("2d", { willReadFrequently: true })
+  if (ctx) {
+    ctx.imageSmoothingEnabled = false
+    ctx.drawImage(src, 0, 0)
+    const img = ctx.getImageData(0, 0, copy.width, copy.height)
+    const d = img.data
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 3] === 0) {
+        d[i] = dirt[0]
+        d[i + 1] = dirt[1]
+        d[i + 2] = dirt[2]
+        d[i + 3] = 255
+      }
+    }
+    ctx.putImageData(img, 0, 0)
+  }
+  return copy
+}
+
+/**
+ * 从 5 素材生成 47 全部瓦片（新算法：Fragment + 错位取景，数据来自 数据.json）。
+ * 素材先换算成参考算法母材朝向（外角 flipX、内角 flipY），再在 3S×3S 虚拟画布上
+ * 按配方的 source/dest/rotation/flip 逐块拼合，最后从 crop 偏移截取 S×S，全程 1:1。
+ */
+export function buildBlob47Tiles(
+  srcs: Partial<Record<Blob5SlotKey, HTMLCanvasElement>>,
+  order: number[],
+): Map<number, HTMLCanvasElement> {
+  const tiles = new Map<number, HTMLCanvasElement>()
+  const anyCanvas = srcs.outer ?? srcs.solid ?? srcs.empty ?? srcs.inner ?? srcs.edge
+  if (!anyCanvas) return tiles
+  const outSize = anyCanvas.width
+  if (!(outSize > 0)) return tiles
+  const scale = outSize / 16
+
+  const dirt = sampleDirtColor(srcs)
+  // 参考算法 5 母材：0=外角 1=全草 2=全土 3=内角 4=直边
+  const refBases: Record<number, HTMLCanvasElement> = {}
+  for (let i = 0; i < RECIPE_BASE_SLOT.length; i++) {
+    const k = RECIPE_BASE_SLOT[i]
+    const raw = srcs[k]
+    if (!raw) continue
+    let b = toReferenceBase(k, raw)
+    if (k === "empty") b = makeEmptyOpaque(b, dirt)
+    refBases[i] = b
+  }
+
+  for (const mask of order) {
+    const recipe = BLOB47_RECIPES[String(mask)]
+    if (!recipe || !recipe.fragments) continue
+    const tile = renderRecipeTile(recipe, refBases, scale, outSize)
+    if (tile) tiles.set(mask, tile)
+  }
+  return tiles
 }
 
 /** 返回当前映射表对应的槽位键列表，避免 16/47 混用同一套槽集 */
@@ -128,84 +327,6 @@ export function emptySlotsForType(t: MappingType): Record<string, string | null>
   const out: Record<string, string | null> = {}
   for (const k of slotKeysForType(t)) out[k] = null
   return out
-}
-
-type Quadrant = "TL" | "TR" | "BL" | "BR"
-
-// For each quadrant:
-//   vert  = the vertical  cardinal neighbour (n / s)
-//   horiz = the horizontal cardinal neighbour (w / e)
-//   diag  = the diagonal neighbour between them
-//   vertEdge  = horizontal-running edge art used when ONLY horiz is grass
-//   horizEdge = vertical-running   edge art used when ONLY vert  is grass
-//
-// IMPORTANT (rotation fix): when the vertical neighbour is EMPTY but the
-// horizontal neighbour is GRASS, the grass boundary runs HORIZONTALLY, so we
-// must use TOP_EDGE / BOTTOM_EDGE. Conversely when only the vertical neighbour
-// is grass, the boundary runs VERTICALLY → LEFT_EDGE / RIGHT_EDGE.
-const QUAD_DEF: Record<
-  Quadrant,
-  {
-    vert: keyof NeighborBits
-    horiz: keyof NeighborBits
-    diag: keyof NeighborBits
-    horizontalEdge: SlotKey
-    verticalEdge: SlotKey
-  }
-> = {
-  TL: { vert: "n", horiz: "w", diag: "nw", horizontalEdge: "TOP_EDGE", verticalEdge: "LEFT_EDGE" },
-  TR: { vert: "n", horiz: "e", diag: "ne", horizontalEdge: "TOP_EDGE", verticalEdge: "RIGHT_EDGE" },
-  BL: { vert: "s", horiz: "w", diag: "sw", horizontalEdge: "BOTTOM_EDGE", verticalEdge: "LEFT_EDGE" },
-  BR: { vert: "s", horiz: "e", diag: "se", horizontalEdge: "BOTTOM_EDGE", verticalEdge: "RIGHT_EDGE" },
-}
-
-// The 4 "外角" (outer corner) slots: the grass forms a protruding tip that
-// points INTO this quadrant.  Example: TL_OUTER art has its grass tip pointing
-// toward top-left, so it is used when the TL quadrant is an outer corner.
-const OUTER_OF: Record<Quadrant, SlotKey> = {
-  TL: "TL_OUTER",
-  TR: "TR_OUTER",
-  BL: "BL_OUTER",
-  BR: "BR_OUTER",
-}
-
-// The 4 "内角" (inner / concave corner) slots: dirt bites in from the diagonal,
-// so the grass body sits toward the OPPOSITE quadrant.  Example: in the BR
-// quadrant a concave notch means dirt comes from bottom-right and grass wraps
-// around the top-left → that shape matches the TL_INNER artwork.
-const INNER_OF: Record<Quadrant, SlotKey> = {
-  TL: "BR_INNER",
-  TR: "BL_INNER",
-  BL: "TR_INNER",
-  BR: "TL_INNER",
-}
-
-// Decide which of the 13 slots fills a given quadrant of a tile.
-//
-// The tile itself is always grass (mask ≠ 0). For each quadrant we look at the
-// vertical cardinal, the horizontal cardinal and the diagonal between them:
-//
-//   !vert && !horiz          → OUTER corner   (protruding tip)
-//   !vert &&  horiz          → HORIZONTAL edge (top / bottom)
-//    vert && !horiz          → VERTICAL   edge (left / right)
-//    vert &&  horiz && !diag → INNER corner    (concave notch)
-//    vert &&  horiz &&  diag → CENTER SOLID
-function slotForQuadrant(q: Quadrant, bits: NeighborBits): SlotKey {
-  const def = QUAD_DEF[q]
-  const vert = !!bits[def.vert]
-  const horiz = !!bits[def.horiz]
-  const diag = !!bits[def.diag]
-
-  // Both cardinals empty → outer protruding corner (grass tip)
-  if (!vert && !horiz) return OUTER_OF[q]
-  // Only the horizontal neighbour is grass → boundary runs horizontally
-  if (!vert && horiz) return def.horizontalEdge
-  // Only the vertical neighbour is grass → boundary runs vertically
-  if (vert && !horiz) return def.verticalEdge
-  // Both cardinals present but no diagonal → inner concave corner
-  if (!diag) return INNER_OF[q]
-  // Fully surrounded → solid center
-  return "CENTER_SOLID"
 }
 
 // ── Dual-Grid 16-tile 拼合（参照参考实现图16）──────────────────────────────
@@ -323,17 +444,18 @@ export function drawSpecTile16(
   if (mask === 0b1001) {
     // TL+BR 草：TL 象限放草在 TL 的凸块（convex 顺时针90°），BR 象限放草在 BR（convex 逆时针90°）
     Q("convex", false, false, 90, 0, destX, destY)
-    Q("bg", false, false, 0, 1, destX + half, destY)
-    Q("bg", false, false, 0, 2, destX, destY + half)
+    // 背景象限素材旋转 180°（用户确认：对角十字的背景块方向需翻转）
+    Q("bg", false, false, 180, 1, destX + half, destY)
+    Q("bg", false, false, 180, 2, destX, destY + half)
     Q("convex", false, false, 270, 3, destX + half, destY + half)
     return
   }
   if (mask === 0b0110) {
     // TR+BL 草：TR 象限放草在 TR（convex 顺时针180°），BL 象限放草在 BL（convex 原样）
-    Q("bg", false, false, 0, 0, destX, destY)
+    Q("bg", false, false, 180, 0, destX, destY)
     Q("convex", false, false, 180, 1, destX + half, destY)
     Q("convex", false, false, 0, 2, destX, destY + half)
-    Q("bg", false, false, 0, 3, destX + half, destY + half)
+    Q("bg", false, false, 180, 3, destX + half, destY + half)
     return
   }
 
@@ -407,7 +529,7 @@ export const DUAL_GRID_16_COLUMNS = 4
 
 // The two diagonal-cross masks that CANNOT be represented by the 13-slot
 // quadrant system — they must be synthesised from 4 outer-corner slots.
-// (已废弃：16 模式现在统一走 4-bit→8-bit 转换 + slotForQuadrant 路径)
+// (已废弃：16 模式统一走 drawSpecTile16 象限裁剪路径)
 
 function bitsFor47(mask: number): NeighborBits {
   return {
@@ -423,39 +545,11 @@ function bitsFor47(mask: number): NeighborBits {
 }
 
 /**
- * 简化模式：把某个 13 槽形状对应的 5 基础块之一，经 flip/rot 变换后
- * 绘制到目标象限。源为基础块（完整 tileSize），目标为象限（size = tileSize/2），
- * 缩小绘制使形状比例保持不变。
- */
-function drawQuadrantTransformed(
-  ctx: CanvasRenderingContext2D,
-  src: HTMLCanvasElement,
-  xf: { flipH: boolean; flipV: boolean; rot: number },
-  dx: number,
-  dy: number,
-  size: number,
-) {
-  // 源基础块可能是完整 tileSize（手绘派生，缩小绘制）或 qSize（Mode B 切片，1:1），
-  // 用 src.width 作为源尺寸避免越界与比例错配。
-  const s = src.width
-  ctx.save()
-  ctx.translate(dx + size / 2, dy + size / 2)
-  if (xf.rot !== 0) ctx.rotate((xf.rot * Math.PI) / 180)
-  if (xf.flipH) ctx.scale(-1, 1)
-  if (xf.flipV) ctx.scale(1, -1)
-  ctx.drawImage(src, 0, 0, s, s, -size / 2, -size / 2, size, size)
-  ctx.restore()
-}
-
-/**
- * Quadrant Stitching generator (13-slot).
+ * Quadrant Stitching generator.
  *
- * The imported image is divided into cells of `gridSize × gridSize`. Each of the
- * 13 slots picks one such cell as its source art. The output autotile is
- * `tileSize = gridSize * 2`, split into 4 quadrants each exactly `gridSize`.
- * For every mask we decide which slot fills which quadrant and draw the whole
- * slot canvas (`gridSize × gridSize`) into that quadrant — matching the classic
- * reference implementation where SUB_SIZE=16, TILE_SIZE=32.
+ * 16 模式：5 基础块 flip/rot 拼出 16 瓦片（尺寸 tileSize）。
+ * 47 模式：源图按 gridSize 1:1 裁出 5 素材 → 应用固化同款角度补偿
+ * （outer +90°、inner -90°）→ buildBlob47Tiles 偏移拼合（输出 = gridSize）。
  */
 export function generateQuadrantStitch(
   imageDataUrl: string,
@@ -471,19 +565,16 @@ export function generateQuadrantStitch(
       try {
         const outTileSize = Math.max(1, tileSize)
         const isDual16 = mappingType === "16"
-        // 47 模式下每个象限的目标尺寸 = 输出瓦片的一半。源切片也裁成这个尺寸，
-        // 使「源 → 象限」缩放比为 1:1，避免瓦片间产生亚像素缝隙。
-        const qSize = Math.max(1, Math.round(outTileSize / 2))
 
         // 16 模式：5 个基础块，切片尺寸 = 整块 tileSize（参照参考图16，源图每格是完整瓦片）
-        // 47 模式：5 个半块，切片尺寸 = qSize（半块）
+        // 47 模式：5 个半块，切片尺寸 = gridSize（源网格原样，不缩放）
         const slotKeys = isDual16
           ? (DUAL16_SLOT_KEYS as string[])
           : (BLOB5_SLOT_KEYS as string[])
         const slotLabels = isDual16 ? DUAL16_LABELS : BLOB5_LABELS
-        // 每个瓦片在 sheet 上的步长：16 模式 = outTileSize；47 模式 = 2*qSize（整数对齐）
-        const genTile = isDual16 ? outTileSize : Math.max(1, 2 * qSize)
-        const sliceSize = isDual16 ? outTileSize : qSize
+        // 每个瓦片在 sheet 上的步长：16 模式 = outTileSize；47 模式 = gridSize
+        const genTile = isDual16 ? outTileSize : Math.max(1, gridSize)
+        const sliceSize = isDual16 ? outTileSize : gridSize
 
         const slotCanvases: Record<string, HTMLCanvasElement | null> = {}
         const missing: string[] = []
@@ -542,79 +633,71 @@ export function generateQuadrantStitch(
             const t = dualSlots[k]
             if (t) drawQuarterTransformed(ctx, t, flipH, flipV, rot, corner, x, y, outTileSize)
           }
-          const renderMask = (ctx: CanvasRenderingContext2D, mask: number, x: number, y: number) => {
-            if (mask === 0b1001) {
-              // TL+BR 草：TR/BL 用空白块填充（不留透明）
+          const renderMask = (ctx: CanvasRenderingContext2D, aMask: number, x: number, y: number) => {
+            // 注意：order 中的 mask 是 B 位约定（TL=8,TR=4,BL=2,BR=1），
+            // drawSpecTile16 内部用 A 位约定（TL=1,TR=2,BL=4,BR=8），必须先转换。
+            // 对角十字（1001/0110）在两种约定下数值相同，但语义要保持一致。
+            if (aMask === 0b1001) {
+              // TL+BR 草：TR/BL 用空白块填充（不留透明），背景素材旋转 180°
               quad(ctx, "convex", false, false, 270, 0, x, y)
-              quad(ctx, "bg", false, false, 0, 1, x + half, y)
-              quad(ctx, "bg", false, false, 0, 2, x, y + half)
+              quad(ctx, "bg", false, false, 180, 1, x + half, y)
+              quad(ctx, "bg", false, false, 180, 2, x, y + half)
               quad(ctx, "convex", false, false, 90, 3, x + half, y + half)
               return
             }
-            if (mask === 0b0110) {
-              // TR+BL 草：TL/BR 用空白块填充（不留透明）
-              quad(ctx, "bg", false, false, 0, 0, x, y)
+            if (aMask === 0b0110) {
+              // TR+BL 草：TL/BR 用空白块填充（不留透明），背景素材旋转 180°。
+              // 注意 dualSlots.convex 已经 -90° 补偿（草在右上 TR 角），
+              // 与 drawSpecTile16 的素材（草左下 BL）基准不同，旋转方案也不同。
+              quad(ctx, "bg", false, false, 180, 0, x, y)
               quad(ctx, "convex", false, false, 0, 1, x + half, y)
               quad(ctx, "convex", false, false, 180, 2, x, y + half)
-              quad(ctx, "bg", false, false, 0, 3, x + half, y + half)
+              quad(ctx, "bg", false, false, 180, 3, x + half, y + half)
               return
             }
-            drawSpecTile16(ctx, dualSlots, mask, x, y, outTileSize)
+            drawSpecTile16(ctx, dualSlots, aMask, x, y, outTileSize)
           }
           order.forEach((mask, idx) => {
             if (mask === null) return
             const tx = (idx % columns) * genTile
             const ty = Math.floor(idx / columns) * genTile
-            renderMask(sctx, mask, tx, ty)
-            // 单独导出一份该 mask 的瓦片（供测试地图/tilesheet 使用）
+            const aMask = bMaskToAMask(mask)
+            // 单独渲染该 mask 的瓦片（供测试地图/tilesheet 使用）
             const tc = document.createElement("canvas")
             tc.width = outTileSize
             tc.height = outTileSize
             const tctx = tc.getContext("2d", { willReadFrequently: true })
             if (tctx) {
               tctx.imageSmoothingEnabled = false
-              renderMask(tctx, mask, 0, 0)
+              renderMask(tctx, aMask, 0, 0)
             }
+            sctx.drawImage(tc, tx, ty)
             tiles.set(mask, tc)
           })
         } else {
-          // 47-blob：瓦片尺寸 = genTile（外层已算 = 2*qSize），整数对齐无拉伸缝。
-          order.forEach((mask, idx) => {
-            if (mask === null) return
+          // 47-blob：素材按 gridSize 1:1 裁取 → 固化同款角度补偿（外角 +90°/内角 -90°）
+          // → buildBlob47Tiles 1/4 步进偏移整块拼合（输出瓦片 = gridSize，全程无缩放）。
+          const srcs: Partial<Record<Blob5SlotKey, HTMLCanvasElement>> = {}
+          const rot = (k: Blob5SlotKey, deg: number) => {
+            const src = slotCanvases[k]
+            if (!src) return
+            srcs[k] = deg === 0 ? src : rotateCanvasDeg(src, deg)
+          }
+          rot("outer", 90)
+          rot("inner", -90)
+          rot("edge", 0)
+          rot("solid", 0)
+          rot("empty", 0)
+          const blobTiles = buildBlob47Tiles(srcs, valid as number[])
+          for (const mask of valid as number[]) {
+            const tile = blobTiles.get(mask)
+            if (!tile) continue
+            tiles.set(mask, tile)
+            const idx = order.indexOf(mask)
             const tx = (idx % columns) * genTile
             const ty = Math.floor(idx / columns) * genTile
-            const bits = bitsFor47(mask)
-
-            const tileCanvas = document.createElement("canvas")
-            tileCanvas.width = genTile
-            tileCanvas.height = genTile
-            const tctx = tileCanvas.getContext("2d", { willReadFrequently: true })
-            if (!tctx) {
-              reject(new Error("无法创建瓦片画布"))
-              return
-            }
-            tctx.imageSmoothingEnabled = false
-
-            const quadrants: { q: Quadrant; dx: number; dy: number }[] = [
-              { q: "TL", dx: 0, dy: 0 },
-              { q: "TR", dx: qSize, dy: 0 },
-              { q: "BL", dx: 0, dy: qSize },
-              { q: "BR", dx: qSize, dy: qSize },
-            ]
-            for (const { q, dx, dy } of quadrants) {
-              const slotKey = slotForQuadrant(q, bits)
-              // 参考图对照修正：47 模式恒定 5 块简化，角槽需旋转补偿。
-              const extraRot = B47_SLOT_ROT_SIMPLE[slotKey] ?? 0
-              // 简化模式：把 13 槽形状映射到 5 基础块 + 变换
-              const xf = BLOB5_XF[slotKey]
-              const src = slotCanvases[xf.base]
-              if (!src) continue
-              drawQuadrantTransformed(tctx, src, { ...xf, rot: xf.rot + extraRot }, dx, dy, qSize)
-            }
-
-            sctx.drawImage(tileCanvas, tx, ty, genTile, genTile)
-            tiles.set(mask, tileCanvas)
-          })
+            sctx.drawImage(tile, tx, ty)
+          }
         }
 
         resolve({
@@ -635,11 +718,6 @@ export function generateQuadrantStitch(
     img.onerror = () => reject(new Error("图片加载失败"))
     img.src = imageDataUrl
   })
-}
-
-// Convert an 8-bit neighbour mask into neighbour bits (47-blob system).
-export function maskToBits(mask: number): NeighborBits {
-  return bitsFor47(mask)
 }
 
 // 双网格 mask 的位约定转换：B 模式（参考图/模板，TL=8,TR=4,BL=2,BR=1）→
@@ -663,7 +741,7 @@ export const MASK47_FULL = 0b11111111
  *  - 16 模式：5 个整块基础块 → drawSpecTile16 拼出 16 种 mask
  *    （DUAL_GRID_16_ORDER 为 B 位约定，渲染前转成 drawSpecTile16 的 A 位约定，
  *      保证瓦片角位与参考图/预览一致：0001=右下角）
- *  - 47 模式：5 个半块基础块 → BLOB5_XF 逐象限拼出 BLOB_STANDARD_ORDER 中的全部 mask
+ *  - 47 模式：5 个素材 → buildBlob47Tiles 按 1/4 步进偏移拼出 BLOB_STANDARD_ORDER 中的全部 mask
  * 输入画布直接复用（不拷贝），每次编辑后调 `setBaseCanvases({...})` 触发重算。
  */
 export function deriveTilesFromBase(
@@ -695,34 +773,15 @@ export function deriveTilesFromBase(
     return tiles
   }
 
-  // 47 模式：简化 5 块路径（手绘画布只有 5 块半块）
-  const qSize = Math.max(1, Math.round(tileSize / 2))
-  const genTile = Math.max(1, 2 * qSize)
-  const quadrants: { q: Quadrant; dx: number; dy: number }[] = [
-    { q: "TL", dx: 0, dy: 0 },
-    { q: "TR", dx: qSize, dy: 0 },
-    { q: "BL", dx: 0, dy: qSize },
-    { q: "BR", dx: qSize, dy: qSize },
-  ]
-  const order = BLOB_STANDARD_ORDER.filter((m) => m !== null) as number[]
-  for (const mask of order) {
-    const bits = bitsFor47(mask)
-    const tc = document.createElement("canvas")
-    tc.width = genTile
-    tc.height = genTile
-    const tctx = tc.getContext("2d", { willReadFrequently: true })
-    if (!tctx) continue
-    tctx.imageSmoothingEnabled = false
-    for (const { q, dx, dy } of quadrants) {
-      const slotKey = slotForQuadrant(q, bits)
-      const xf = BLOB5_XF[slotKey]
-      const src = baseCanvases[xf.base]
-      if (!src) continue
-      drawQuadrantTransformed(tctx, src, xf, dx, dy, qSize)
-    }
-    tiles.set(mask, tc)
+  // 47 模式：素材尺寸 = 输出瓦片尺寸（参数路径 tileSize / 固化路径 gridSize），
+  // 1/4 步进偏移整块拼合，1:1 无缩放（tileSize 参数仅供 16 分支使用）。
+  const srcs: Partial<Record<Blob5SlotKey, HTMLCanvasElement>> = {}
+  for (const k of BLOB5_SLOT_KEYS) {
+    const c = baseCanvases[k]
+    if (c) srcs[k] = c
   }
-  return tiles
+  const order = BLOB_STANDARD_ORDER.filter((m) => m !== null) as number[]
+  return buildBlob47Tiles(srcs, order)
 }
 
 /**
