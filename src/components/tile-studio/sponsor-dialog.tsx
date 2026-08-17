@@ -40,8 +40,8 @@ export function SponsorDialog({ open, onOpenChange }: { open: boolean; onOpenCha
             👨‍💻 作者 B 站主页
           </Button>
           <Button
-            variant="ghost"
-            className="px-6 text-orange-500 hover:bg-orange-500/10 hover:text-orange-600"
+            variant="outline"
+            className="border-orange-500 px-6 text-foreground hover:bg-orange-500/10 hover:text-orange-600"
             onClick={() => onOpenChange(false)}
           >
             关闭
