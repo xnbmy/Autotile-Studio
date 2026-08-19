@@ -1,12 +1,40 @@
 "use client"
 
 import { useEditorStore } from "@/lib/store"
-import { Wrench, ImagePlus } from "lucide-react"
+import { invoke, isTauri } from "@tauri-apps/api/core"
+import { Wrench, ImagePlus, ImageDown } from "lucide-react"
+import { toast } from "sonner"
 
 /** 图片导入路径 · 步骤 ①：询问是否进入图片预处理 */
 export function SlicePreprocessCheck() {
   const chooseSlicePreprocess = useEditorStore((s) => s.chooseSlicePreprocess)
   const skipSlicePreprocess = useEditorStore((s) => s.skipSlicePreprocess)
+
+  /** 导出模板到桌面，供 AI 生图参考 */
+  async function handleExportTemplate() {
+    try {
+      const res = await fetch("/template.png")
+      if (!res.ok) throw new Error("模板资源加载失败")
+      const blob = await res.blob()
+      if (isTauri()) {
+        const data = new Uint8Array(await blob.arrayBuffer())
+        const path = await invoke<string>("save_to_desktop", { filename: "模板.png", data })
+        toast.success("模板已导出到桌面", { description: path })
+      } else {
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement("a")
+        a.href = url
+        a.download = "模板.png"
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        toast.success("模板已下载")
+      }
+    } catch (err) {
+      toast.error("导出模板失败", { description: err instanceof Error ? err.message : "未知错误" })
+    }
+  }
 
   return (
     <div className="flex h-full w-full items-center justify-center bg-background p-8">
@@ -50,6 +78,16 @@ export function SlicePreprocessCheck() {
             </div>
           </button>
         </div>
+
+        <button
+          type="button"
+          onClick={handleExportTemplate}
+          className="flex items-center gap-2 rounded-lg border border-border bg-card px-4 py-2 text-xs text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+          title="导出模板到桌面，用于 AI 生图参考"
+        >
+          <ImageDown data-icon="inline-start" />
+          导出模板（AI 生图参考）
+        </button>
       </div>
     </div>
   )

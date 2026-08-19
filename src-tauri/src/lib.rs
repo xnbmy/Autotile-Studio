@@ -32,8 +32,10 @@ async fn open_url(url: String) -> Result<(), String> {
 #[tauri::command]
 async fn choose_save_path(suggested_name: String) -> Result<Option<String>, String> {
   tauri::async_runtime::spawn_blocking(move || {
-    // 文件名经环境变量传递，规避 PowerShell 引号转义问题
-    let script = "Add-Type -AssemblyName System.Windows.Forms; \
+    // 文件名经环境变量传递，规避 PowerShell 引号转义问题；
+    // 先设 stdout 为 UTF-8，否则中文文件名会按 GBK 输出导致乱码
+    let script = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
+      Add-Type -AssemblyName System.Windows.Forms; \
       $d = New-Object System.Windows.Forms.SaveFileDialog; \
       $d.Filter = 'PNG 图片 (*.png)|*.png'; \
       $d.FileName = [IO.Path]::GetFileName($env:AT_SUGGESTED) -replace '\\.[^.]+$', '.png'; \
@@ -69,10 +71,38 @@ async fn write_bytes(path: String, data: Vec<u8>) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// 将文件直接保存到用户桌面（如导出 AI 生图参考模板）。
+/// 桌面路径经 PowerShell 获取（避免引入 dirs crate），stdout 设为 UTF-8 防中文路径乱码。
+#[tauri::command]
+async fn save_to_desktop(filename: String, data: Vec<u8>) -> Result<String, String> {
+  tauri::async_runtime::spawn_blocking(move || {
+    let script = "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; \
+      [Environment]::GetFolderPath('Desktop')";
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NoLogo", "-Command", script]);
+    // CREATE_NO_WINDOW：禁止创建控制台窗口，避免弹出命令框
+    #[cfg(windows)]
+    {
+      use std::os::windows::process::CommandExt;
+      cmd.creation_flags(0x08000000);
+    }
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    let desktop = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if desktop.is_empty() {
+      return Err("无法获取桌面路径".to_string());
+    }
+    let path = format!("{}\\{}", desktop.trim_end_matches('\\'), filename);
+    std::fs::write(&path, &data).map_err(|e| e.to_string())?;
+    Ok(path)
+  })
+  .await
+  .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
-    .invoke_handler(tauri::generate_handler![open_url, choose_save_path, write_bytes])
+    .invoke_handler(tauri::generate_handler![open_url, choose_save_path, write_bytes, save_to_desktop])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
